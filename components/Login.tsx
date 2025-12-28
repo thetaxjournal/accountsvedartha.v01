@@ -3,7 +3,7 @@ import { Eye, EyeOff, Loader2, ShieldCheck, Video, Globe } from 'lucide-react';
 import { COMPANY_LOGO } from '../constants';
 import { auth, db } from '../firebase';
 import { signInWithEmailAndPassword, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs, or } from 'firebase/firestore';
 import { UserRole } from '../types';
 
 interface LoginProps {
@@ -100,12 +100,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
         // 4. Final Check: Proceed or Deny
         if (authenticatedUser) {
-            // We use the internal 'vedartha_user' persistence for consistency with role-based features.
-            // We sign out of the Firebase 'auth' session immediately to prevent 'App.tsx' from 
-            // treating this as a generic Admin session via onAuthStateChanged default logic.
-            // The synthetic user object carries all necessary permissions.
-            await signOut(auth);
-
+            await signOut(auth); // Sign out of Firebase Auth to rely on internal session state
             if (rememberMe) {
                 localStorage.setItem('vedartha_user', JSON.stringify(authenticatedUser));
             } else {
@@ -113,7 +108,6 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
             }
             onLogin(authenticatedUser);
         } else {
-            // If email is not in database, we don't allow login, even if Google Auth passed.
             await signOut(auth);
             throw new Error("Access Denied: This email is not registered in our system.");
         }
@@ -146,11 +140,61 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     try {
         let authenticatedUser: any = null;
 
-        // STRATEGY 1: Check Client Portal Login
-        if (!cleanLoginId.includes('@')) {
+        // STRATEGY 1: Check Custom Staff/Employee Users (Priority 1)
+        // Check both email and employeeId
+        const usersRef = collection(db, 'users');
+        // Note: Firestore 'or' query might require specific indexing, doing parallel checks is safer without indexes
+        const userEmailQ = query(usersRef, where('email', '==', cleanLoginId), where('password', '==', cleanPassword));
+        const userIdQ = query(usersRef, where('employeeId', '==', cleanLoginId), where('password', '==', cleanPassword));
+        
+        const [userEmailSnap, userIdSnap] = await Promise.all([getDocs(userEmailQ), getDocs(userIdQ)]);
+        const userSnapshot = !userEmailSnap.empty ? userEmailSnap : userIdSnap;
+
+        if (!userSnapshot.empty) {
+            const userData = userSnapshot.docs[0].data();
+            authenticatedUser = {
+                uid: userSnapshot.docs[0].id,
+                email: userData.email,
+                displayName: userData.displayName,
+                role: userData.role,
+                allowedBranchIds: userData.allowedBranchIds || [],
+                isStaff: true, 
+                employeeId: userData.employeeId 
+            };
+        }
+
+        // STRATEGY 2: Check Branch Portal Login (Priority 2)
+        if (!authenticatedUser) {
+            const branchesRef = collection(db, 'branches');
+            const branchUserQ = query(branchesRef, where('portalUsername', '==', cleanLoginId), where('portalPassword', '==', cleanPassword));
+            // Also allow login via branch email if password matches portal password
+            const branchEmailQ = query(branchesRef, where('email', '==', cleanLoginId), where('portalPassword', '==', cleanPassword));
+            
+            const [branchUserSnap, branchEmailSnap] = await Promise.all([getDocs(branchUserQ), getDocs(branchEmailQ)]);
+            const branchSnapshot = !branchUserSnap.empty ? branchUserSnap : branchEmailSnap;
+
+            if (!branchSnapshot.empty) {
+                const branchData = branchSnapshot.docs[0].data();
+                authenticatedUser = {
+                    uid: branchData.id,
+                    email: branchData.email,
+                    displayName: `${branchData.name} (Manager)`,
+                    role: UserRole.BRANCH_MANAGER,
+                    allowedBranchIds: [branchData.id],
+                    isBranchUser: true 
+                };
+            }
+        }
+
+        // STRATEGY 3: Check Client Portal Login (Priority 3)
+        if (!authenticatedUser) {
            const clientsRef = collection(db, 'clients');
-           const clientQ = query(clientsRef, where('id', '==', cleanLoginId), where('portalPassword', '==', cleanPassword));
-           const clientSnapshot = await getDocs(clientQ);
+           const clientIdQ = query(clientsRef, where('id', '==', cleanLoginId), where('portalPassword', '==', cleanPassword));
+           // Allow email login for clients too
+           const clientEmailQ = query(clientsRef, where('email', '==', cleanLoginId), where('portalPassword', '==', cleanPassword));
+           
+           const [clientIdSnap, clientEmailSnap] = await Promise.all([getDocs(clientIdQ), getDocs(clientEmailQ)]);
+           const clientSnapshot = !clientIdSnap.empty ? clientIdSnap : clientEmailSnap;
 
            if (!clientSnapshot.empty) {
               const clientData = clientSnapshot.docs[0].data();
@@ -167,57 +211,16 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                  throw new Error('Portal access is disabled for this client.');
               }
            }
-
-           // STRATEGY 2: Check Branch Portal Login
-           if (!authenticatedUser) {
-               const branchesRef = collection(db, 'branches');
-               const branchQ = query(branchesRef, where('portalUsername', '==', cleanLoginId), where('portalPassword', '==', cleanPassword));
-               const branchSnapshot = await getDocs(branchQ);
-
-               if (!branchSnapshot.empty) {
-                   const branchData = branchSnapshot.docs[0].data();
-                   authenticatedUser = {
-                       uid: branchData.id,
-                       email: branchData.email,
-                       displayName: `${branchData.name} (Manager)`,
-                       role: UserRole.BRANCH_MANAGER,
-                       allowedBranchIds: [branchData.id],
-                       isBranchUser: true 
-                   };
-               }
-           }
         }
 
-        // STRATEGY 3: Check Custom Staff/Employee Users
-        if (!authenticatedUser) {
-            const usersRef = collection(db, 'users');
-            let userQ;
-            if (cleanLoginId.includes('@')) {
-                 userQ = query(usersRef, where('email', '==', cleanLoginId), where('password', '==', cleanPassword));
-            } else {
-                 userQ = query(usersRef, where('employeeId', '==', cleanLoginId), where('password', '==', cleanPassword));
-            }
-            
-            const userSnapshot = await getDocs(userQ);
-
-            if (!userSnapshot.empty) {
-                const userData = userSnapshot.docs[0].data();
-                authenticatedUser = {
-                    uid: userSnapshot.docs[0].id,
-                    email: userData.email,
-                    displayName: userData.displayName,
-                    role: userData.role,
-                    allowedBranchIds: userData.allowedBranchIds || [],
-                    isStaff: true, 
-                    employeeId: userData.employeeId 
-                };
-            }
-        }
-
-        // STRATEGY 4: Fallback to Firebase Auth (Admin/Owner)
+        // STRATEGY 4: Fallback to Firebase Auth (Legacy Admin/Owner)
         if (!authenticatedUser && cleanLoginId.includes('@')) {
-            const userCredential = await signInWithEmailAndPassword(auth, cleanLoginId, cleanPassword);
-            authenticatedUser = userCredential.user;
+            try {
+                const userCredential = await signInWithEmailAndPassword(auth, cleanLoginId, cleanPassword);
+                authenticatedUser = userCredential.user;
+            } catch (e) {
+                // Ignore firebase auth error if we already checked other strategies, just means not a firebase user
+            }
         }
 
         if (authenticatedUser) {
@@ -260,10 +263,8 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                 muted 
                 playsInline
                 className="w-full h-full object-cover"
-                poster="https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=2072&auto=format&fit=crop"
             >
-                {/* Updated to a high-quality abstract tech loop for seamless background */}
-                <source src="https://cdn.pixabay.com/video/2019/04/20/22908-331624479_large.mp4" type="video/mp4" />
+                <source src="https://res.cloudinary.com/dtgufvwb5/video/upload/10915129-hd_3840_2160_30fps_xy4way.mp4" type="video/mp4" />
                 Your browser does not support the video tag.
             </video>
             {/* Gradient Overlay for Text Readability */}
@@ -313,10 +314,10 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                )}
 
                <div className="space-y-2">
-                  <label className="text-[11px] font-black text-gray-500 uppercase tracking-widest ml-1">Identity (ID / Email)</label>
+                  <label className="text-[11px] font-black text-gray-500 uppercase tracking-widest ml-1">Identity (ID / Email / Username)</label>
                   <input 
                     type="text" 
-                    placeholder="Enter Client ID, Branch Code, or Email"
+                    placeholder="Enter Client ID, Branch User, or Email"
                     className="w-full h-14 px-6 rounded-2xl border-2 border-gray-100 bg-gray-50/50 text-sm font-bold text-gray-900 focus:border-[#0854a0] focus:ring-4 focus:ring-blue-50 focus:bg-white outline-none transition-all placeholder:text-gray-400"
                     value={loginId}
                     onChange={(e) => setLoginId(e.target.value)}

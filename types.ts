@@ -187,6 +187,7 @@ export interface PayrollRecord {
     conveyance: number;
     specialAllowance: number;
     incentive: number; // Variable pay
+    leaveEncashment: number; // New: Leave Encashment Amount
   };
   deductions: {
     pf: number;

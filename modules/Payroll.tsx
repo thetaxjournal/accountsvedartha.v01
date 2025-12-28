@@ -1,9 +1,10 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { 
   Users, UserPlus, FileText, Banknote, CalendarCheck, Settings, 
   Search, Save, X, Eye, Printer, Download, Lock, CheckCircle2,
-  AlertCircle, Key, Calculator, Briefcase, Building2, CreditCard
+  AlertCircle, Key, Calculator, Briefcase, Building2, CreditCard,
+  Upload, FileDown, Loader2, Check
 } from 'lucide-react';
 import { Employee, PayrollRecord, Branch, SalaryStructure } from '../types';
 import { COMPANY_NAME, COMPANY_LOGO } from '../constants';
@@ -39,6 +40,14 @@ const Payroll: React.FC<PayrollProps> = ({
   const [selectedMonth, setSelectedMonth] = useState(new Date().toLocaleString('default', { month: 'long', year: 'numeric' }));
   const [lopData, setLopData] = useState<{ [empId: string]: number }>({}); // Loss of Pay days
   const [incentiveData, setIncentiveData] = useState<{ [empId: string]: number }>({}); 
+  const [encashData, setEncashData] = useState<{ [empId: string]: number }>({}); // Leave Encashment Days
+
+  // UI Processing State
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processStep, setProcessStep] = useState('');
+  const [processSuccess, setProcessSuccess] = useState(false);
+
+  const csvInputRef = useRef<HTMLInputElement>(null);
 
   // --- DERIVED DATA ---
   const filteredEmployees = employees.filter(e => 
@@ -136,7 +145,95 @@ const Payroll: React.FC<PayrollProps> = ({
     setShowEmployeeModal(false);
   };
 
-  const calculatePayrollPreview = () => {
+  const downloadCSVTemplate = () => {
+      const headers = "EmployeeCode,EmployeeName,LOP_Days,Incentive_Amount,Leave_Encashment_Days";
+      const rows = employees.filter(e => e.status === 'Active').map(e => 
+          `${e.id},${e.name.replace(/,/g, '')},0,0,0`
+      ).join('\n');
+      
+      const csvContent = "data:text/csv;charset=utf-8," + headers + "\n" + rows;
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", `Payroll_Attendance_Template_${selectedMonth.replace(' ', '_')}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+  };
+
+  const handleCSVImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      setIsProcessing(true);
+      setProcessStep('Parsing CSV Data...');
+      setProcessSuccess(false);
+
+      // Animation delay for user feedback
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+          const text = e.target?.result as string;
+          if (!text) {
+              setIsProcessing(false);
+              return;
+          }
+
+          const lines = text.split('\n');
+          const newLop: { [key: string]: number } = {};
+          const newIncentive: { [key: string]: number } = {};
+          const newEncash: { [key: string]: number } = {};
+          let processedCount = 0;
+
+          setProcessStep('Updating Attendance Records...');
+          await new Promise(resolve => setTimeout(resolve, 800));
+
+          // Skip header (index 0)
+          for (let i = 1; i < lines.length; i++) {
+              const line = lines[i].trim();
+              if (!line) continue;
+              
+              const parts = line.split(',');
+              if (parts.length >= 5) {
+                  const empId = parts[0].trim();
+                  // Validate if employee exists
+                  if (employees.some(e => e.id === empId)) {
+                      newLop[empId] = parseFloat(parts[2]) || 0;
+                      newIncentive[empId] = parseFloat(parts[3]) || 0;
+                      newEncash[empId] = parseFloat(parts[4]) || 0;
+                      processedCount++;
+                  }
+              }
+          }
+
+          setLopData(prev => ({ ...prev, ...newLop }));
+          setIncentiveData(prev => ({ ...prev, ...newIncentive }));
+          setEncashData(prev => ({ ...prev, ...newEncash }));
+          
+          setProcessStep(`Imported ${processedCount} Records!`);
+          setProcessSuccess(true);
+          
+          setTimeout(() => {
+              setIsProcessing(false);
+              // Reset input
+              if (csvInputRef.current) csvInputRef.current.value = '';
+          }, 1200);
+      };
+      reader.readAsText(file);
+  };
+
+  const calculatePayrollPreview = async () => {
+    setIsProcessing(true);
+    setProcessStep('Calculating Earnings & Deductions...');
+    setProcessSuccess(false);
+
+    // Simulate Calculation Step
+    await new Promise(resolve => setTimeout(resolve, 1500));
+
+    setProcessStep('Generating Payslips...');
+    await new Promise(resolve => setTimeout(resolve, 800));
+
     const draftRecords: PayrollRecord[] = employees.filter(e => e.status === 'Active').map(emp => {
       const daysInMonth = 30; // Standardize for simplicity
       const lopDays = lopData[emp.id] || 0;
@@ -150,7 +247,13 @@ const Payroll: React.FC<PayrollProps> = ({
       const earnedSpecial = Math.round(emp.salary.specialAllowance * lopFactor);
       const incentive = incentiveData[emp.id] || 0;
 
-      const totalEarnings = earnedBasic + earnedHra + earnedConv + earnedSpecial + incentive;
+      // Leave Encashment Calculation: (Basic / 30) * Encash Days
+      const encashDays = encashData[emp.id] || 0;
+      const leaveEncashment = encashDays > 0 
+          ? Math.round((emp.salary.basic / 30) * encashDays) 
+          : 0;
+
+      const totalEarnings = earnedBasic + earnedHra + earnedConv + earnedSpecial + incentive + leaveEncashment;
 
       // Deductions
       const pf = Math.round(emp.salary.pfDeduction); 
@@ -175,7 +278,8 @@ const Payroll: React.FC<PayrollProps> = ({
           hra: earnedHra,
           conveyance: earnedConv,
           specialAllowance: earnedSpecial,
-          incentive
+          incentive,
+          leaveEncashment
         },
         deductions: {
           pf, pt, tds, lopAmount: 0 
@@ -189,8 +293,14 @@ const Payroll: React.FC<PayrollProps> = ({
     });
 
     onProcessPayroll(draftRecords);
-    alert(`Payroll processed for ${draftRecords.length} employees. Check Register.`);
-    setActiveTab('register');
+    
+    setProcessStep('Payroll Processed Successfully!');
+    setProcessSuccess(true);
+
+    setTimeout(() => {
+        setIsProcessing(false);
+        setActiveTab('register');
+    }, 1000);
   };
 
   const handlePrintPayslip = (record: PayrollRecord) => {
@@ -204,6 +314,30 @@ const Payroll: React.FC<PayrollProps> = ({
   };
 
   // --- RENDERERS ---
+
+  const ProcessingOverlay = () => (
+      <div className="absolute inset-0 bg-white/90 backdrop-blur-sm z-50 flex flex-col items-center justify-center animate-in fade-in duration-300 rounded-2xl">
+          {!processSuccess ? (
+              <div className="flex flex-col items-center">
+                  <div className="relative mb-6">
+                      <div className="w-16 h-16 border-4 border-blue-100 border-t-[#0854a0] rounded-full animate-spin"></div>
+                      <div className="absolute inset-0 flex items-center justify-center">
+                          <Settings size={24} className="text-[#0854a0] animate-pulse" />
+                      </div>
+                  </div>
+                  <h3 className="text-xl font-black text-[#1c2d3d] animate-pulse">{processStep}</h3>
+                  <p className="text-xs text-gray-400 font-bold mt-2 uppercase tracking-widest">Please Wait</p>
+              </div>
+          ) : (
+              <div className="flex flex-col items-center animate-in zoom-in duration-300">
+                  <div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center mb-6 shadow-lg shadow-emerald-50 text-emerald-600">
+                      <Check size={40} strokeWidth={4} />
+                  </div>
+                  <h3 className="text-2xl font-black text-gray-800">{processStep}</h3>
+              </div>
+          )}
+      </div>
+  );
 
   const PayslipDocument = ({ record }: { record: PayrollRecord }) => {
     const emp = employees.find(e => e.id === record.employeeId);
@@ -262,6 +396,7 @@ const Payroll: React.FC<PayrollProps> = ({
                         <div className="flex justify-between"><span>Conveyance</span><span className="font-medium">{record.earnings.conveyance.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
                         <div className="flex justify-between"><span>Special Allowance</span><span className="font-medium">{record.earnings.specialAllowance.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
                         {record.earnings.incentive > 0 && <div className="flex justify-between"><span>Incentive / Bonus</span><span className="font-medium">{record.earnings.incentive.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>}
+                        {(record.earnings.leaveEncashment || 0) > 0 && <div className="flex justify-between"><span>Leave Encashment</span><span className="font-medium">{record.earnings.leaveEncashment.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>}
                     </div>
                     <div className="border-t border-black p-2 font-bold flex justify-between bg-gray-50 mt-auto">
                         <span>Total Earnings Rs.</span>
@@ -421,21 +556,49 @@ const Payroll: React.FC<PayrollProps> = ({
 
       {/* === ATTENDANCE & PROCESS TAB === */}
       {activeTab === 'attendance' && (
-         <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-200">
-            <div className="flex justify-between items-end mb-8 border-b border-gray-100 pb-6">
+         <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-200 relative overflow-hidden">
+            
+            {/* Processing Overlay */}
+            {isProcessing && <ProcessingOverlay />}
+
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-8 border-b border-gray-100 pb-6 gap-4">
                <div>
                   <h3 className="text-lg font-black text-gray-800 uppercase tracking-tight">Run Payroll</h3>
-                  <p className="text-xs text-gray-400 font-bold mt-1">Step 1: Input LOP & Incentives</p>
+                  <p className="text-xs text-gray-400 font-bold mt-1">Step 1: Input LOP, Incentives & Encashments</p>
                </div>
+               
                <div className="flex items-center space-x-4">
+                  {/* CSV Actions */}
+                  <button onClick={downloadCSVTemplate} className="text-blue-600 hover:text-blue-800 text-[10px] font-bold flex items-center bg-blue-50 px-3 py-2 rounded-lg transition-colors">
+                      <FileDown size={14} className="mr-1.5" /> Template
+                  </button>
+                  <div className="relative">
+                      <input 
+                          type="file" 
+                          ref={csvInputRef} 
+                          accept=".csv" 
+                          className="hidden" 
+                          onChange={handleCSVImport}
+                      />
+                      <button onClick={() => csvInputRef.current?.click()} className="text-emerald-600 hover:text-emerald-800 text-[10px] font-bold flex items-center bg-emerald-50 px-3 py-2 rounded-lg transition-colors">
+                          <Upload size={14} className="mr-1.5" /> Import CSV
+                      </button>
+                  </div>
+
+                  <div className="h-8 w-[1px] bg-gray-200 mx-2"></div>
+
                   <div className="flex flex-col">
-                     <label className="text-[10px] font-black text-gray-400 uppercase">Payroll Month</label>
+                     <label className="text-[9px] font-black text-gray-400 uppercase">Payroll Month</label>
                      <select 
                         value={selectedMonth} 
                         onChange={e => setSelectedMonth(e.target.value)}
                         className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-bold outline-none"
                      >
-                        {['September 2024', 'October 2024', 'November 2024', 'December 2024'].map(m => <option key={m} value={m}>{m}</option>)}
+                        {['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map(m => {
+                            const year = new Date().getFullYear();
+                            const val = `${m} ${year}`;
+                            return <option key={val} value={val}>{val}</option>
+                        })}
                      </select>
                   </div>
                   <button onClick={calculatePayrollPreview} className="bg-emerald-600 text-white px-6 py-3 rounded-xl text-xs font-black uppercase tracking-widest shadow-lg hover:bg-emerald-700 transition-all flex items-center">
@@ -444,40 +607,63 @@ const Payroll: React.FC<PayrollProps> = ({
                </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-4">
-               {employees.filter(e => e.status === 'Active').map(emp => (
-                  <div key={emp.id} className="flex items-center justify-between p-4 border border-gray-100 rounded-xl hover:border-blue-200 transition-all">
-                     <div className="flex items-center space-x-4 w-1/3">
-                        <div className="w-8 h-8 rounded-full bg-blue-50 flex items-center justify-center text-xs font-black text-blue-600">{emp.name.charAt(0)}</div>
-                        <div>
-                           <p className="font-bold text-gray-800 text-xs">{emp.name}</p>
-                           <p className="text-[10px] text-gray-400 font-mono">{emp.id}</p>
-                        </div>
-                     </div>
-                     <div className="flex items-center space-x-8">
-                        <div className="flex flex-col">
-                           <label className="text-[9px] font-bold text-gray-400 uppercase mb-1">LOP Days</label>
-                           <input 
-                              type="number" 
-                              min="0" max="30"
-                              className="w-20 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-bold text-center focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none"
-                              value={lopData[emp.id] || 0}
-                              onChange={e => setLopData({...lopData, [emp.id]: Number(e.target.value)})}
-                           />
-                        </div>
-                        <div className="flex flex-col">
-                           <label className="text-[9px] font-bold text-gray-400 uppercase mb-1">Incentive (₹)</label>
-                           <input 
-                              type="number" 
-                              min="0"
-                              className="w-24 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-bold text-center focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 outline-none"
-                              value={incentiveData[emp.id] || 0}
-                              onChange={e => setIncentiveData({...incentiveData, [emp.id]: Number(e.target.value)})}
-                           />
-                        </div>
-                     </div>
-                  </div>
-               ))}
+            <div className="overflow-x-auto">
+               <div className="min-w-full inline-block align-middle">
+                   <div className="border border-gray-100 rounded-xl overflow-hidden">
+                       <table className="min-w-full divide-y divide-gray-100">
+                           <thead className="bg-gray-50">
+                               <tr>
+                                   <th scope="col" className="px-6 py-3 text-left text-[10px] font-black text-gray-500 uppercase tracking-wider">Employee</th>
+                                   <th scope="col" className="px-6 py-3 text-center text-[10px] font-black text-gray-500 uppercase tracking-wider">LOP Days</th>
+                                   <th scope="col" className="px-6 py-3 text-center text-[10px] font-black text-gray-500 uppercase tracking-wider">Incentive (₹)</th>
+                                   <th scope="col" className="px-6 py-3 text-center text-[10px] font-black text-gray-500 uppercase tracking-wider">Leave Encash. Days</th>
+                               </tr>
+                           </thead>
+                           <tbody className="bg-white divide-y divide-gray-100">
+                               {employees.filter(e => e.status === 'Active').map(emp => (
+                                  <tr key={emp.id} className="hover:bg-blue-50/20">
+                                     <td className="px-6 py-4 whitespace-nowrap">
+                                         <div className="flex items-center">
+                                            <div className="w-8 h-8 rounded-full bg-blue-50 flex items-center justify-center text-xs font-black text-blue-600 mr-3">{emp.name.charAt(0)}</div>
+                                            <div>
+                                               <p className="font-bold text-gray-800 text-xs">{emp.name}</p>
+                                               <p className="text-[10px] text-gray-400 font-mono">{emp.id}</p>
+                                            </div>
+                                         </div>
+                                     </td>
+                                     <td className="px-6 py-4 whitespace-nowrap text-center">
+                                         <input 
+                                            type="number" 
+                                            min="0" max="30"
+                                            className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-bold text-center focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition-all"
+                                            value={lopData[emp.id] || 0}
+                                            onChange={e => setLopData({...lopData, [emp.id]: Number(e.target.value)})}
+                                         />
+                                     </td>
+                                     <td className="px-6 py-4 whitespace-nowrap text-center">
+                                         <input 
+                                            type="number" 
+                                            min="0"
+                                            className="w-24 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-bold text-center focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 outline-none transition-all"
+                                            value={incentiveData[emp.id] || 0}
+                                            onChange={e => setIncentiveData({...incentiveData, [emp.id]: Number(e.target.value)})}
+                                         />
+                                     </td>
+                                     <td className="px-6 py-4 whitespace-nowrap text-center">
+                                         <input 
+                                            type="number" 
+                                            min="0"
+                                            className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-bold text-center focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all"
+                                            value={encashData[emp.id] || 0}
+                                            onChange={e => setEncashData({...encashData, [emp.id]: Number(e.target.value)})}
+                                         />
+                                     </td>
+                                  </tr>
+                               ))}
+                           </tbody>
+                       </table>
+                   </div>
+               </div>
             </div>
          </div>
       )}
