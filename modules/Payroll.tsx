@@ -4,7 +4,7 @@ import {
   Users, UserPlus, FileText, Banknote, CalendarCheck, Settings, 
   Search, Save, X, Eye, Printer, Download, Lock, CheckCircle2,
   AlertCircle, Key, Calculator, Briefcase, Building2, CreditCard,
-  Upload, FileDown, Loader2, Check
+  Upload, FileDown, Loader2, Check, UserMinus, FileX
 } from 'lucide-react';
 import QRCode from 'react-qr-code';
 import { Employee, PayrollRecord, Branch, SalaryStructure } from '../types';
@@ -32,6 +32,21 @@ const Payroll: React.FC<PayrollProps> = ({
   const [activeTab, setActiveTab] = useState<'employees' | 'attendance' | 'register' | 'reports'>('employees');
   const [showEmployeeModal, setShowEmployeeModal] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Partial<Employee> | null>(null);
+  
+  // Settlement State
+  const [showSettlementModal, setShowSettlementModal] = useState(false);
+  const [settlementEmployee, setSettlementEmployee] = useState<Employee | null>(null);
+  const [settlementData, setSettlementData] = useState({
+      exitDate: new Date().toISOString().split('T')[0],
+      reason: 'Resigned', // or Terminated
+      pendingDays: 0,
+      leaveEncashmentDays: 0,
+      gratuityAmount: 0,
+      noticeShortfallDays: 0, // Negative if recovery, Positive if Company Pays (rare)
+      assetRecovery: 0,
+      otherDeductions: 0
+  });
+
   const [grossSalaryInput, setGrossSalaryInput] = useState<string>('');
   const [viewingPayslip, setViewingPayslip] = useState<PayrollRecord | null>(null);
   const [isPrinting, setIsPrinting] = useState(false);
@@ -58,8 +73,8 @@ const Payroll: React.FC<PayrollProps> = ({
   );
 
   const filteredPayroll = payrollRecords.filter(r => 
-    r.month === selectedMonth && 
-    (r.employeeName.toLowerCase().includes(searchTerm.toLowerCase()) || r.employeeId.includes(searchTerm))
+    (r.month === selectedMonth && r.type !== 'Settlement') || 
+    (r.type === 'Settlement' && (r.employeeName.toLowerCase().includes(searchTerm.toLowerCase()) || r.employeeId.includes(searchTerm)))
   );
 
   // Sync Gross Input when editing an employee
@@ -72,7 +87,7 @@ const Payroll: React.FC<PayrollProps> = ({
               setGrossSalaryInput('');
           }
       }
-  }, [editingEmployee?.id]); // Only run on ID change/open
+  }, [editingEmployee?.id]); 
 
   // --- HANDLERS ---
 
@@ -91,33 +106,128 @@ const Payroll: React.FC<PayrollProps> = ({
     setShowEmployeeModal(true);
   };
 
+  const initiateSettlement = (emp: Employee) => {
+      setSettlementEmployee(emp);
+      setSettlementData({
+          exitDate: new Date().toISOString().split('T')[0],
+          reason: 'Resigned',
+          pendingDays: 0,
+          leaveEncashmentDays: 0,
+          gratuityAmount: 0,
+          noticeShortfallDays: 0,
+          assetRecovery: 0,
+          otherDeductions: 0
+      });
+      setShowSettlementModal(true);
+  };
+
+  const processFullAndFinal = async () => {
+      if (!settlementEmployee) return;
+
+      setIsProcessing(true);
+      setProcessStep('Computing Final Dues...');
+      setProcessSuccess(false);
+
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Calculate Settlement Figures
+      const empSalary = settlementEmployee.salary;
+      const perDayBasic = empSalary.basic / 30;
+      const perDayGross = (empSalary.basic + empSalary.hra + empSalary.conveyance + empSalary.specialAllowance) / 30;
+
+      // 1. Pending Salary (Pro-rated Gross)
+      const pendingSalary = Math.round(perDayGross * settlementData.pendingDays);
+      
+      // 2. Leave Encashment (Usually on Basic)
+      const leaveEncashmentAmt = Math.round(perDayBasic * settlementData.leaveEncashmentDays);
+
+      // 3. Notice Period Recovery (Deduction on Gross usually)
+      const noticeRecovery = Math.round(perDayGross * settlementData.noticeShortfallDays);
+
+      // 4. Earnings
+      const earnedBasic = Math.round((empSalary.basic / 30) * settlementData.pendingDays);
+      const earnedHra = Math.round((empSalary.hra / 30) * settlementData.pendingDays);
+      const earnedConv = Math.round((empSalary.conveyance / 30) * settlementData.pendingDays);
+      const earnedSpecial = Math.round((empSalary.specialAllowance / 30) * settlementData.pendingDays);
+
+      const totalEarnings = earnedBasic + earnedHra + earnedConv + earnedSpecial + leaveEncashmentAmt + settlementData.gratuityAmount;
+
+      // 5. Deductions
+      const pf = Math.round(empSalary.pfDeduction / 30 * settlementData.pendingDays);
+      const pt = 0; // Usually 0 for F&F or pro-rated
+      const tds = empSalary.tdsDeduction;
+      const totalDeductions = pf + pt + tds + noticeRecovery + settlementData.assetRecovery + settlementData.otherDeductions;
+
+      // 6. Generate Record
+      const settlementRecord: PayrollRecord = {
+          id: `FnF-${settlementEmployee.id}-${Date.now()}`,
+          type: 'Settlement',
+          payslipNo: `FF/${settlementEmployee.id}/${new Date().getFullYear()}`,
+          month: 'Full & Final Settlement',
+          year: new Date().getFullYear(),
+          employeeId: settlementEmployee.id,
+          employeeName: settlementEmployee.name,
+          branchId: settlementEmployee.branchId,
+          designation: settlementEmployee.designation,
+          totalDays: 0,
+          presentDays: settlementData.pendingDays,
+          lopDays: 0,
+          earnings: {
+              basic: earnedBasic,
+              hra: earnedHra,
+              conveyance: earnedConv,
+              specialAllowance: earnedSpecial,
+              incentive: 0,
+              leaveEncashment: leaveEncashmentAmt,
+              gratuity: settlementData.gratuityAmount
+          },
+          deductions: {
+              pf, pt, tds, 
+              advanceSalary: settlementData.otherDeductions,
+              lopAmount: 0,
+              noticePeriodRecovery: noticeRecovery,
+              assetRecovery: settlementData.assetRecovery
+          },
+          grossPay: totalEarnings,
+          totalDeductions,
+          netPay: totalEarnings - totalDeductions,
+          status: 'Locked',
+          generatedDate: new Date().toISOString()
+      };
+
+      onProcessPayroll([settlementRecord]);
+
+      // 7. Update Employee Status
+      const updatedEmp = { 
+          ...settlementEmployee, 
+          status: settlementData.reason as 'Resigned' | 'Terminated',
+          exitDate: settlementData.exitDate
+      };
+      onUpdateEmployee(updatedEmp);
+
+      setProcessStep('Settlement Generated Successfully');
+      setProcessSuccess(true);
+      
+      setTimeout(() => {
+          setIsProcessing(false);
+          setShowSettlementModal(false);
+          setActiveTab('register'); // Go to register to see it
+      }, 1200);
+  };
+
   const handleGrossCalculation = (value: string) => {
       setGrossSalaryInput(value);
       const gross = Number(value);
       if (!editingEmployee || isNaN(gross)) return;
 
       // Auto-Calculation Logic
-      // 1. Basic = 50% of Gross
       const basic = Math.round(gross * 0.50);
-      
-      // 2. HRA = 40% of Basic
       const hra = Math.round(basic * 0.40);
-      
-      // 3. Conveyance = Fixed 1600 (Standard Norm) or remaining if low salary
       const conveyance = 1600;
-
-      // 4. Special Allowance = Balancing Figure
       let special = gross - basic - hra - conveyance;
-      if (special < 0) {
-          // Adjust for very low salaries where formula exceeds gross
-          special = 0;
-      }
+      if (special < 0) special = 0;
 
-      // Deductions
-      // 5. PF = 12% of Basic
       const pf = Math.round(basic * 0.12);
-
-      // 6. PT = 200 if Gross > 15000, else 0 (Karnataka/General rule)
       const pt = gross >= 15000 ? 200 : 0;
 
       setEditingEmployee({
@@ -137,7 +247,6 @@ const Payroll: React.FC<PayrollProps> = ({
   const saveEmployee = () => {
     if (!editingEmployee?.name || !editingEmployee.id) return alert('Name is required');
     
-    // Check if exists
     const exists = employees.find(e => e.id === editingEmployee.id);
     if (exists) {
       onUpdateEmployee(editingEmployee as Employee);
@@ -147,93 +256,11 @@ const Payroll: React.FC<PayrollProps> = ({
     setShowEmployeeModal(false);
   };
 
-  const downloadCSVTemplate = () => {
-      const headers = "EmployeeCode,EmployeeName,LOP_Days,Incentive_Amount,Leave_Encashment_Days,Advance_Salary";
-      const rows = employees.filter(e => e.status === 'Active').map(e => 
-          `${e.id},${e.name.replace(/,/g, '')},0,0,0,0`
-      ).join('\n');
-      
-      const csvContent = "data:text/csv;charset=utf-8," + headers + "\n" + rows;
-      const encodedUri = encodeURI(csvContent);
-      const link = document.createElement("a");
-      link.setAttribute("href", encodedUri);
-      link.setAttribute("download", `Payroll_Attendance_Template_${selectedMonth.replace(' ', '_')}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-  };
-
-  const handleCSVImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0];
-      if (!file) return;
-
-      setIsProcessing(true);
-      setProcessStep('Parsing CSV Data...');
-      setProcessSuccess(false);
-
-      // Animation delay for user feedback
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-          const text = e.target?.result as string;
-          if (!text) {
-              setIsProcessing(false);
-              return;
-          }
-
-          const lines = text.split('\n');
-          const newLop: { [key: string]: number } = {};
-          const newIncentive: { [key: string]: number } = {};
-          const newEncash: { [key: string]: number } = {};
-          const newAdvance: { [key: string]: number } = {};
-          let processedCount = 0;
-
-          setProcessStep('Updating Attendance Records...');
-          await new Promise(resolve => setTimeout(resolve, 800));
-
-          // Skip header (index 0)
-          for (let i = 1; i < lines.length; i++) {
-              const line = lines[i].trim();
-              if (!line) continue;
-              
-              const parts = line.split(',');
-              if (parts.length >= 6) {
-                  const empId = parts[0].trim();
-                  // Validate if employee exists
-                  if (employees.some(e => e.id === empId)) {
-                      newLop[empId] = parseFloat(parts[2]) || 0;
-                      newIncentive[empId] = parseFloat(parts[3]) || 0;
-                      newEncash[empId] = parseFloat(parts[4]) || 0;
-                      newAdvance[empId] = parseFloat(parts[5]) || 0;
-                      processedCount++;
-                  }
-              }
-          }
-
-          setLopData(prev => ({ ...prev, ...newLop }));
-          setIncentiveData(prev => ({ ...prev, ...newIncentive }));
-          setEncashData(prev => ({ ...prev, ...newEncash }));
-          setAdvanceData(prev => ({ ...prev, ...newAdvance }));
-          
-          setProcessStep(`Imported ${processedCount} Records!`);
-          setProcessSuccess(true);
-          
-          setTimeout(() => {
-              setIsProcessing(false);
-              // Reset input
-              if (csvInputRef.current) csvInputRef.current.value = '';
-          }, 1200);
-      };
-      reader.readAsText(file);
-  };
-
   const calculatePayrollPreview = async () => {
     setIsProcessing(true);
     setProcessStep('Calculating Earnings & Deductions...');
     setProcessSuccess(false);
 
-    // Simulate Calculation Step
     await new Promise(resolve => setTimeout(resolve, 1500));
 
     setProcessStep('Generating Payslips...');
@@ -252,7 +279,6 @@ const Payroll: React.FC<PayrollProps> = ({
       const earnedSpecial = Math.round(emp.salary.specialAllowance * lopFactor);
       const incentive = incentiveData[emp.id] || 0;
 
-      // Leave Encashment Calculation: (Basic / 30) * Encash Days
       const encashDays = encashData[emp.id] || 0;
       const leaveEncashment = encashDays > 0 
           ? Math.round((emp.salary.basic / 30) * encashDays) 
@@ -268,7 +294,6 @@ const Payroll: React.FC<PayrollProps> = ({
       
       const totalDeductions = pf + pt + tds + advance;
       
-      // Payslip Serial Code
       const serialCode = `${emp.id}${Date.now().toString().slice(-4)}`;
 
       return {
@@ -303,7 +328,6 @@ const Payroll: React.FC<PayrollProps> = ({
     });
 
     onProcessPayroll(draftRecords);
-    
     setProcessStep('Payroll Processed Successfully!');
     setProcessSuccess(true);
 
@@ -359,12 +383,11 @@ const Payroll: React.FC<PayrollProps> = ({
 
   const PayslipDocument = ({ record }: { record: PayrollRecord }) => {
     const emp = employees.find(e => e.id === record.employeeId);
-    // Determine Branch details for display
     const branch = branches.find(b => b.id === record.branchId) || branches[0];
     const branchName = branch ? branch.name : 'Head Office';
     const branchLocation = branch ? branch.address.city : 'Bengaluru';
+    const isSettlement = record.type === 'Settlement';
 
-    // Unique QR Code generation for scanner
     const qrValue = generateSecureQR({
         type: 'PAYSLIP',
         id: record.id,
@@ -388,10 +411,12 @@ const Payroll: React.FC<PayrollProps> = ({
         {/* Title */}
         <div className="text-center mb-6 flex justify-between items-center px-4">
             <div className="text-left">
-                <p className="text-[9px] font-bold text-gray-400 uppercase">Payslip No</p>
+                <p className="text-[9px] font-bold text-gray-400 uppercase">{isSettlement ? 'F&F Ref No' : 'Payslip No'}</p>
                 <p className="font-mono font-bold text-sm">{record.payslipNo || 'N/A'}</p>
             </div>
-            <h2 className="text-[#0854a0] font-bold text-sm uppercase tracking-wide">Payslip for {record.month}</h2>
+            <h2 className={`font-bold text-sm uppercase tracking-wide ${isSettlement ? 'text-rose-600' : 'text-[#0854a0]'}`}>
+                {isSettlement ? 'Full & Final Settlement Statement' : `Payslip for ${record.month}`}
+            </h2>
             <div className="text-right">
                 <p className="text-[9px] font-bold text-gray-400 uppercase">Generated</p>
                 <p className="font-bold text-[10px]">{new Date(record.generatedDate).toLocaleDateString()}</p>
@@ -404,17 +429,15 @@ const Payroll: React.FC<PayrollProps> = ({
             <div className="grid grid-cols-2 border-b-2 border-black p-4 gap-y-1 gap-x-8">
                 <div className="space-y-1.5">
                     <div className="flex"><span className="w-28 font-bold text-gray-700">Employee ID</span><span className="font-bold">: {record.employeeId}</span></div>
-                    <div className="flex"><span className="w-28 font-bold text-gray-700">Date of Birth</span><span className="font-bold">: {emp ? '01-Jan-1990' : 'N/A'}</span></div>
                     <div className="flex"><span className="w-28 font-bold text-gray-700">Designation</span><span className="font-bold">: {record.designation}</span></div>
                     <div className="flex"><span className="w-28 font-bold text-gray-700">Department</span><span className="font-bold">: {emp?.department}</span></div>
                     <div className="flex"><span className="w-28 font-bold text-gray-700">PF Number</span><span className="font-bold">: BLR/12345/000</span></div>
                 </div>
                 <div className="space-y-1.5">
                     <div className="flex"><span className="w-32 font-bold text-gray-700">Employee Name</span><span className="font-bold">: {record.employeeName}</span></div>
-                    <div className="flex"><span className="w-32 font-bold text-gray-700">Joining Date</span><span className="font-bold">: {emp?.joiningDate}</span></div>
+                    <div className="flex"><span className="w-32 font-bold text-gray-700">{isSettlement ? 'Exit Date' : 'Joining Date'}</span><span className="font-bold">: {isSettlement ? emp?.exitDate : emp?.joiningDate}</span></div>
                     <div className="flex"><span className="w-32 font-bold text-gray-700">Location</span><span className="font-bold">: {branchLocation}</span></div>
                     <div className="flex"><span className="w-32 font-bold text-gray-700">PAN Number</span><span className="font-bold">: {emp?.pan}</span></div>
-                    <div className="flex"><span className="w-32 font-bold text-gray-700">UAN Number</span><span className="font-bold">: 100000000000</span></div>
                 </div>
             </div>
 
@@ -432,7 +455,8 @@ const Payroll: React.FC<PayrollProps> = ({
                         <div className="flex justify-between"><span>Conveyance</span><span className="font-medium">{record.earnings.conveyance.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
                         <div className="flex justify-between"><span>Special Allowance</span><span className="font-medium">{record.earnings.specialAllowance.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
                         {record.earnings.incentive > 0 && <div className="flex justify-between"><span>Incentive / Bonus</span><span className="font-medium">{record.earnings.incentive.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>}
-                        {(record.earnings.leaveEncashment || 0) > 0 && <div className="flex justify-between"><span>Leave Encashment</span><span className="font-medium">{record.earnings.leaveEncashment.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>}
+                        {(record.earnings.leaveEncashment || 0) > 0 && <div className="flex justify-between text-emerald-600"><span>Leave Encashment</span><span className="font-medium">{record.earnings.leaveEncashment.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>}
+                        {(record.earnings.gratuity || 0) > 0 && <div className="flex justify-between text-emerald-600"><span>Gratuity</span><span className="font-medium">{record.earnings.gratuity?.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>}
                     </div>
                     <div className="border-t border-black p-2 font-bold flex justify-between bg-gray-50 mt-auto">
                         <span>Total Earnings Rs.</span>
@@ -451,7 +475,13 @@ const Payroll: React.FC<PayrollProps> = ({
                         <div className="flex justify-between"><span>Professional Tax</span><span className="font-medium">{record.deductions.pt.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
                         <div className="flex justify-between"><span>Tax Deducted (TDS)</span><span className="font-medium">{record.deductions.tds.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
                         {(record.deductions.advanceSalary || 0) > 0 && (
-                            <div className="flex justify-between text-rose-600"><span>Advance Salary</span><span className="font-bold">{record.deductions.advanceSalary.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
+                            <div className="flex justify-between text-rose-600"><span>{isSettlement ? 'Other Ded/Advance' : 'Advance Salary'}</span><span className="font-bold">{record.deductions.advanceSalary.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
+                        )}
+                        {(record.deductions.noticePeriodRecovery || 0) > 0 && (
+                            <div className="flex justify-between text-rose-600"><span>Notice Period Rec.</span><span className="font-bold">{record.deductions.noticePeriodRecovery?.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
+                        )}
+                        {(record.deductions.assetRecovery || 0) > 0 && (
+                            <div className="flex justify-between text-rose-600"><span>Asset Recovery</span><span className="font-bold">{record.deductions.assetRecovery?.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
                         )}
                     </div>
                     <div className="border-t border-black p-2 font-bold flex justify-between bg-gray-50 mt-auto">
@@ -463,27 +493,29 @@ const Payroll: React.FC<PayrollProps> = ({
                 {/* Summary / Attendance */}
                 <div className="w-[30%] flex flex-col">
                     <div className="p-3 space-y-3 border-b border-black flex-1">
-                        <div className="flex justify-between"><span className="font-bold text-gray-600">STANDARD DAYS</span><span className="font-bold">: {record.totalDays}</span></div>
-                        <div className="flex justify-between"><span className="font-bold text-gray-600">DAYS WORKED</span><span className="font-bold">: {record.presentDays}</span></div>
-                        <div className="flex justify-between"><span className="font-bold text-gray-600">LOP DAYS</span><span className="font-bold text-red-600">: {record.lopDays}</span></div>
+                        {isSettlement ? (
+                            <>
+                                <div className="flex justify-between"><span className="font-bold text-gray-600">SETTLEMENT TYPE</span><span className="font-bold text-rose-600 uppercase">{emp?.status}</span></div>
+                                <div className="flex justify-between"><span className="font-bold text-gray-600">PENDING DAYS</span><span className="font-bold">{record.presentDays}</span></div>
+                            </>
+                        ) : (
+                            <>
+                                <div className="flex justify-between"><span className="font-bold text-gray-600">STANDARD DAYS</span><span className="font-bold">: {record.totalDays}</span></div>
+                                <div className="flex justify-between"><span className="font-bold text-gray-600">DAYS WORKED</span><span className="font-bold">: {record.presentDays}</span></div>
+                                <div className="flex justify-between"><span className="font-bold text-gray-600">LOP DAYS</span><span className="font-bold text-red-600">: {record.lopDays}</span></div>
+                            </>
+                        )}
                     </div>
-                    <div className="p-3 border-b border-black flex-1 bg-gray-50/50 relative">
-                        {/* Unique QR Code for Payslip */}
-                        <div className="absolute right-2 top-2 opacity-10">
-                            <QRCode value={qrValue} size={64} />
-                        </div>
+                    <div className="p-3 border-b border-black flex-1 bg-gray-50/50">
                         <div className="font-bold mb-2 underline decoration-gray-300 underline-offset-4">PAYMENT DETAILS</div>
                         <div className="space-y-2 text-[10px]">
                             <div className="flex"><span className="w-16 font-bold text-gray-500">PAYMENT</span><span className="font-bold">: BANK TRANSFER</span></div>
                             <div className="flex"><span className="w-16 font-bold text-gray-500">BANK</span><span className="font-bold uppercase">: {emp?.bankDetails.bankName || 'N/A'}</span></div>
                             <div className="flex"><span className="w-16 font-bold text-gray-500">A/C No.</span><span className="font-bold">: {emp?.bankDetails.accountNumber || 'N/A'}</span></div>
                         </div>
-                        <div className="mt-4 flex justify-center">
-                             <QRCode value={qrValue} size={80} level="M" />
-                        </div>
                     </div>
                     <div className="p-3 bg-[#f0f0f0] font-black text-right border-t-2 border-black h-16 flex flex-col justify-center">
-                        <span className="text-[9px] text-gray-500 uppercase tracking-widest mb-1">Net Salary Rs.</span>
+                        <span className="text-[9px] text-gray-500 uppercase tracking-widest mb-1">{isSettlement ? 'Final Settlement Rs.' : 'Net Salary Rs.'}</span>
                         <span className="text-xl">{record.netPay.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span>
                     </div>
                 </div>
@@ -494,7 +526,17 @@ const Payroll: React.FC<PayrollProps> = ({
         <div className="mt-6 border border-black p-3 text-[10px]">
             <p className="font-bold mb-1">Note:</p>
             <p className="mb-1">1. This is a system generated report. This does not require any signature.</p>
-            <p>2. Private and Confidential Disclaimer: This payslip has been generated by the {COMPANY_NAME} payroll service provider. All compensation information has been treated as confidential.</p>
+            {isSettlement ? (
+                <p>2. This document confirms the full and final settlement of all dues between the employee and {COMPANY_NAME}. No further claims shall be entertained.</p>
+            ) : (
+                <p>2. Private and Confidential Disclaimer: This payslip has been generated by the {COMPANY_NAME} payroll service provider. All compensation information has been treated as confidential.</p>
+            )}
+        </div>
+
+        {/* QR Code at Bottom */}
+        <div className="mt-6 flex flex-col items-center justify-center">
+             <QRCode value={qrValue} size={80} level="M" />
+             <p className="text-[9px] font-bold mt-1 text-gray-500 uppercase tracking-widest">Scan to Verify</p>
         </div>
       </div>
     );
@@ -589,6 +631,15 @@ const Payroll: React.FC<PayrollProps> = ({
                                         <Key size={14} />
                                     </button>
                                     <button onClick={() => { setEditingEmployee(emp); setShowEmployeeModal(true); }} className="text-blue-600 hover:bg-blue-50 p-2 rounded-lg font-bold text-xs">Edit</button>
+                                    {emp.status === 'Active' && (
+                                        <button 
+                                            onClick={() => initiateSettlement(emp)} 
+                                            className="text-rose-500 hover:bg-rose-50 p-2 rounded-lg font-bold text-xs"
+                                            title="Initiate Full & Final Settlement"
+                                        >
+                                            <UserMinus size={14} />
+                                        </button>
+                                    )}
                                 </div>
                              </td>
                           </tr>
@@ -600,130 +651,85 @@ const Payroll: React.FC<PayrollProps> = ({
         </div>
       )}
 
-      {/* === ATTENDANCE & PROCESS TAB === */}
-      {activeTab === 'attendance' && (
-         <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-200 relative overflow-hidden">
-            
-            {/* Processing Overlay */}
-            {isProcessing && <ProcessingOverlay />}
+      {/* === SETTLEMENT MODAL === */}
+      {showSettlementModal && settlementEmployee && (
+          <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in zoom-in-95 duration-200">
+              <div className="bg-white w-full max-w-2xl rounded-[32px] shadow-2xl border border-gray-200 overflow-hidden flex flex-col">
+                  {/* Processing Overlay inside Modal */}
+                  {isProcessing && <ProcessingOverlay />}
 
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-8 border-b border-gray-100 pb-6 gap-4">
-               <div>
-                  <h3 className="text-lg font-black text-gray-800 uppercase tracking-tight">Run Payroll</h3>
-                  <p className="text-xs text-gray-400 font-bold mt-1">Step 1: Input LOP, Incentives, Encashments & Advances</p>
-               </div>
-               
-               <div className="flex items-center space-x-4">
-                  {/* CSV Actions */}
-                  <button onClick={downloadCSVTemplate} className="text-blue-600 hover:text-blue-800 text-[10px] font-bold flex items-center bg-blue-50 px-3 py-2 rounded-lg transition-colors">
-                      <FileDown size={14} className="mr-1.5" /> Template
-                  </button>
-                  <div className="relative">
-                      <input 
-                          type="file" 
-                          ref={csvInputRef} 
-                          accept=".csv" 
-                          className="hidden" 
-                          onChange={handleCSVImport}
-                      />
-                      <button onClick={() => csvInputRef.current?.click()} className="text-emerald-600 hover:text-emerald-800 text-[10px] font-bold flex items-center bg-emerald-50 px-3 py-2 rounded-lg transition-colors">
-                          <Upload size={14} className="mr-1.5" /> Import CSV
+                  <div className="p-8 border-b border-gray-100 bg-rose-50/50 flex justify-between items-center">
+                      <div>
+                          <h3 className="text-xl font-black text-rose-800 uppercase tracking-tight">Full & Final Settlement</h3>
+                          <p className="text-xs font-bold text-rose-400 mt-1 uppercase tracking-widest">Exit Management for {settlementEmployee.name}</p>
+                      </div>
+                      <button onClick={() => setShowSettlementModal(false)} className="p-2 hover:bg-rose-100 rounded-full text-rose-500"><X size={20} /></button>
+                  </div>
+
+                  <div className="p-8 space-y-6 overflow-y-auto">
+                      <div className="grid grid-cols-2 gap-6">
+                          <div className="space-y-2">
+                              <label className="text-[10px] font-bold text-gray-500 uppercase">Exit Date</label>
+                              <input type="date" className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 font-bold text-sm focus:border-rose-500 outline-none" value={settlementData.exitDate} onChange={e => setSettlementData({...settlementData, exitDate: e.target.value})} />
+                          </div>
+                          <div className="space-y-2">
+                              <label className="text-[10px] font-bold text-gray-500 uppercase">Reason</label>
+                              <select className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 font-bold text-sm focus:border-rose-500 outline-none" value={settlementData.reason} onChange={e => setSettlementData({...settlementData, reason: e.target.value})}>
+                                  <option value="Resigned">Resignation</option>
+                                  <option value="Terminated">Termination</option>
+                                  <option value="Retired">Retirement</option>
+                              </select>
+                          </div>
+                      </div>
+
+                      <div className="bg-gray-50 p-6 rounded-2xl border border-gray-200 space-y-4">
+                          <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 border-b border-gray-200 pb-2">Payable Components</h4>
+                          <div className="grid grid-cols-2 gap-4">
+                              <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-gray-500">Pending Salary Days</label>
+                                  <input type="number" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-bold text-right" value={settlementData.pendingDays} onChange={e => setSettlementData({...settlementData, pendingDays: Number(e.target.value)})} />
+                              </div>
+                              <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-gray-500">Leave Encashment Days</label>
+                                  <input type="number" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-bold text-right" value={settlementData.leaveEncashmentDays} onChange={e => setSettlementData({...settlementData, leaveEncashmentDays: Number(e.target.value)})} />
+                              </div>
+                              <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-gray-500">Gratuity Amount</label>
+                                  <input type="number" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-bold text-right" value={settlementData.gratuityAmount} onChange={e => setSettlementData({...settlementData, gratuityAmount: Number(e.target.value)})} />
+                              </div>
+                          </div>
+                      </div>
+
+                      <div className="bg-rose-50 p-6 rounded-2xl border border-rose-100 space-y-4">
+                          <h4 className="text-[10px] font-black text-rose-400 uppercase tracking-widest mb-2 border-b border-rose-200 pb-2">Recoveries & Deductions</h4>
+                          <div className="grid grid-cols-2 gap-4">
+                              <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-rose-600">Notice Period Shortfall (Days)</label>
+                                  <input type="number" className="w-full border border-rose-200 rounded-lg px-3 py-2 text-sm font-bold text-right text-rose-600" value={settlementData.noticeShortfallDays} onChange={e => setSettlementData({...settlementData, noticeShortfallDays: Number(e.target.value)})} />
+                              </div>
+                              <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-rose-600">Asset Damage Recovery</label>
+                                  <input type="number" className="w-full border border-rose-200 rounded-lg px-3 py-2 text-sm font-bold text-right text-rose-600" value={settlementData.assetRecovery} onChange={e => setSettlementData({...settlementData, assetRecovery: Number(e.target.value)})} />
+                              </div>
+                              <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-rose-600">Other Deductions</label>
+                                  <input type="number" className="w-full border border-rose-200 rounded-lg px-3 py-2 text-sm font-bold text-right text-rose-600" value={settlementData.otherDeductions} onChange={e => setSettlementData({...settlementData, otherDeductions: Number(e.target.value)})} />
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+
+                  <div className="p-6 border-t border-gray-100 bg-gray-50 flex justify-end space-x-4">
+                      <button onClick={() => setShowSettlementModal(false)} className="px-6 py-3 rounded-xl text-xs font-bold text-gray-500 hover:bg-white transition-all">Cancel</button>
+                      <button onClick={processFullAndFinal} className="px-8 py-3 rounded-xl bg-rose-600 text-white text-xs font-black uppercase tracking-widest shadow-lg hover:bg-rose-700 transition-all flex items-center">
+                          <FileX size={16} className="mr-2" /> Generate Settlement
                       </button>
                   </div>
-
-                  <div className="h-8 w-[1px] bg-gray-200 mx-2"></div>
-
-                  <div className="flex flex-col">
-                     <label className="text-[9px] font-black text-gray-400 uppercase">Payroll Month</label>
-                     <select 
-                        value={selectedMonth} 
-                        onChange={e => setSelectedMonth(e.target.value)}
-                        className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-bold outline-none"
-                     >
-                        {['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map(m => {
-                            const year = new Date().getFullYear();
-                            const val = `${m} ${year}`;
-                            return <option key={val} value={val}>{val}</option>
-                        })}
-                     </select>
-                  </div>
-                  <button onClick={calculatePayrollPreview} className="bg-emerald-600 text-white px-6 py-3 rounded-xl text-xs font-black uppercase tracking-widest shadow-lg hover:bg-emerald-700 transition-all flex items-center">
-                     <Banknote size={16} className="mr-2" /> Process Salaries
-                  </button>
-               </div>
-            </div>
-
-            <div className="overflow-x-auto">
-               <div className="min-w-full inline-block align-middle">
-                   <div className="border border-gray-100 rounded-xl overflow-hidden">
-                       <table className="min-w-full divide-y divide-gray-100">
-                           <thead className="bg-gray-50">
-                               <tr>
-                                   <th scope="col" className="px-6 py-3 text-left text-[10px] font-black text-gray-500 uppercase tracking-wider">Employee</th>
-                                   <th scope="col" className="px-6 py-3 text-center text-[10px] font-black text-gray-500 uppercase tracking-wider">LOP Days</th>
-                                   <th scope="col" className="px-6 py-3 text-center text-[10px] font-black text-gray-500 uppercase tracking-wider">Incentive (₹)</th>
-                                   <th scope="col" className="px-6 py-3 text-center text-[10px] font-black text-gray-500 uppercase tracking-wider">Encash Days</th>
-                                   <th scope="col" className="px-6 py-3 text-center text-[10px] font-black text-gray-500 uppercase tracking-wider">Advance (₹)</th>
-                               </tr>
-                           </thead>
-                           <tbody className="bg-white divide-y divide-gray-100">
-                               {employees.filter(e => e.status === 'Active').map(emp => (
-                                  <tr key={emp.id} className="hover:bg-blue-50/20">
-                                     <td className="px-6 py-4 whitespace-nowrap">
-                                         <div className="flex items-center">
-                                            <div className="w-8 h-8 rounded-full bg-blue-50 flex items-center justify-center text-xs font-black text-blue-600 mr-3">{emp.name.charAt(0)}</div>
-                                            <div>
-                                               <p className="font-bold text-gray-800 text-xs">{emp.name}</p>
-                                               <p className="text-[10px] text-gray-400 font-mono">{emp.id}</p>
-                                            </div>
-                                         </div>
-                                     </td>
-                                     <td className="px-6 py-4 whitespace-nowrap text-center">
-                                         <input 
-                                            type="number" 
-                                            min="0" max="30"
-                                            className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-bold text-center focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition-all"
-                                            value={lopData[emp.id] || 0}
-                                            onChange={e => setLopData({...lopData, [emp.id]: Number(e.target.value)})}
-                                         />
-                                     </td>
-                                     <td className="px-6 py-4 whitespace-nowrap text-center">
-                                         <input 
-                                            type="number" 
-                                            min="0"
-                                            className="w-24 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-bold text-center focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 outline-none transition-all"
-                                            value={incentiveData[emp.id] || 0}
-                                            onChange={e => setIncentiveData({...incentiveData, [emp.id]: Number(e.target.value)})}
-                                         />
-                                     </td>
-                                     <td className="px-6 py-4 whitespace-nowrap text-center">
-                                         <input 
-                                            type="number" 
-                                            min="0"
-                                            className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-bold text-center focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all"
-                                            value={encashData[emp.id] || 0}
-                                            onChange={e => setEncashData({...encashData, [emp.id]: Number(e.target.value)})}
-                                         />
-                                     </td>
-                                     <td className="px-6 py-4 whitespace-nowrap text-center">
-                                         <input 
-                                            type="number" 
-                                            min="0"
-                                            className="w-24 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-bold text-center focus:border-amber-500 focus:ring-2 focus:ring-amber-100 outline-none transition-all"
-                                            value={advanceData[emp.id] || 0}
-                                            onChange={e => setAdvanceData({...advanceData, [emp.id]: Number(e.target.value)})}
-                                         />
-                                     </td>
-                                  </tr>
-                               ))}
-                           </tbody>
-                       </table>
-                   </div>
-               </div>
-            </div>
-         </div>
+              </div>
+          </div>
       )}
 
+      {/* ... (Existing Register Tab and Employee Modal Code remains same) ... */}
       {/* === REGISTER TAB === */}
       {activeTab === 'register' && (
          <div className="space-y-6">
@@ -746,8 +752,8 @@ const Payroll: React.FC<PayrollProps> = ({
                            <h4 className="font-bold text-gray-900">{record.employeeName}</h4>
                            <p className="text-[10px] text-gray-500 font-mono">{record.employeeId}</p>
                         </div>
-                        <span className={`text-[9px] px-2 py-1 rounded font-black uppercase ${record.status === 'Locked' ? 'bg-gray-100 text-gray-500' : 'bg-amber-100 text-amber-700'}`}>
-                           {record.status}
+                        <span className={`text-[9px] px-2 py-1 rounded font-black uppercase ${record.type === 'Settlement' ? 'bg-rose-100 text-rose-700' : record.status === 'Locked' ? 'bg-gray-100 text-gray-500' : 'bg-amber-100 text-amber-700'}`}>
+                           {record.type === 'Settlement' ? 'F&F' : record.status}
                         </span>
                      </div>
                      
@@ -771,7 +777,7 @@ const Payroll: React.FC<PayrollProps> = ({
                            onClick={() => handlePrintPayslip(record)}
                            className="flex-1 py-2 bg-[#0854a0] text-white rounded-lg text-[10px] font-bold uppercase tracking-wide hover:bg-[#064280] transition-colors flex items-center justify-center"
                         >
-                           <Printer size={14} className="mr-2" /> Payslip
+                           <Printer size={14} className="mr-2" /> {record.type === 'Settlement' ? 'Full & Final' : 'Payslip'}
                         </button>
                      </div>
                   </div>

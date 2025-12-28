@@ -153,6 +153,7 @@ export interface Employee {
   designation: string;
   department: string;
   joiningDate: string;
+  exitDate?: string; // New: For Final Settlement
   email: string;
   phone: string;
   pan: string;
@@ -168,8 +169,9 @@ export interface Employee {
 
 export interface PayrollRecord {
   id: string; // Run ID
+  type?: 'Monthly' | 'Settlement'; // New: To distinguish standard payroll from F&F
   payslipNo?: string; // Unique Serial e.g. 911001/04/2025
-  month: string; // e.g., "October 2023"
+  month: string; // e.g., "October 2023" or "Final Settlement"
   year: number;
   employeeId: string;
   employeeName: string;
@@ -189,6 +191,8 @@ export interface PayrollRecord {
     specialAllowance: number;
     incentive: number; // Variable pay
     leaveEncashment: number; // New: Leave Encashment Amount
+    gratuity?: number; // New: For F&F
+    noticePeriodPay?: number; // New: For F&F (Earnings side if company pays)
   };
   deductions: {
     pf: number;
@@ -196,6 +200,8 @@ export interface PayrollRecord {
     tds: number;
     advanceSalary: number; // New: Advance Salary Deduction
     lopAmount: number;
+    noticePeriodRecovery?: number; // New: For F&F (Deduction if employee didn't serve)
+    assetRecovery?: number; // New: For F&F
   };
   grossPay: number;
   totalDeductions: number;
