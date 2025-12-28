@@ -11,16 +11,17 @@ import {
   Building2,
   Phone
 } from 'lucide-react';
-import { Employee, PayrollRecord } from '../types';
+import { Employee, PayrollRecord, Branch } from '../types';
 import { COMPANY_NAME, COMPANY_LOGO, LOGO_DARK_BG } from '../constants';
 
 interface EmployeePortalProps {
   employee: Employee | undefined;
   payrollRecords: PayrollRecord[];
+  branches: Branch[];
   onLogout: () => void;
 }
 
-const EmployeePortal: React.FC<EmployeePortalProps> = ({ employee, payrollRecords, onLogout }) => {
+const EmployeePortal: React.FC<EmployeePortalProps> = ({ employee, payrollRecords, branches, onLogout }) => {
   const [viewingPayslip, setViewingPayslip] = useState<PayrollRecord | null>(null);
   const [isPrinting, setIsPrinting] = useState(false);
 
@@ -36,76 +37,113 @@ const EmployeePortal: React.FC<EmployeePortalProps> = ({ employee, payrollRecord
 
   // Reusing the Payslip Document Component Logic locally to be self-contained
   const PayslipDocument = ({ record }: { record: PayrollRecord }) => {
+    // Note: 'employee' prop is already the logged-in employee context
+    const branch = branches.find(b => b.id === record.branchId) || branches[0];
+    const branchName = branch ? branch.name : 'Head Office';
+    const branchLocation = branch ? branch.address.city : 'Bengaluru';
+
     return (
-      <div className="bg-white w-[210mm] min-h-[297mm] p-[15mm] text-[#000000] font-sans flex flex-col relative print:p-[15mm]">
+      <div className="bg-white w-[210mm] min-h-[297mm] p-[10mm] text-black font-sans text-[11px] leading-tight relative print:p-[10mm]">
         {/* Header */}
-        <div className="flex justify-between items-center border-b-2 border-black pb-4 mb-6">
+        <div className="flex justify-between items-center mb-6 border-b border-gray-200 pb-4">
            <img src={COMPANY_LOGO} className="h-16 object-contain" />
            <div className="text-right">
-              <h1 className="text-xl font-bold uppercase tracking-widest text-[#0854a0]">{COMPANY_NAME}</h1>
-              <p className="text-[10px] font-bold text-gray-500 uppercase">Payslip for {record.month}</p>
+              <h1 className="text-xl font-bold uppercase tracking-tight text-black">{COMPANY_NAME}</h1>
+              <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">{branchName}</p>
            </div>
         </div>
 
-        {/* Employee Details Grid */}
-        <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 mb-8 text-[11px]">
-           <div className="grid grid-cols-2 gap-y-2 gap-x-8">
-              <div className="flex justify-between"><span className="font-bold text-gray-500">Employee Name</span><span className="font-bold">{record.employeeName}</span></div>
-              <div className="flex justify-between"><span className="font-bold text-gray-500">Employee ID</span><span className="font-bold">{record.employeeId}</span></div>
-              <div className="flex justify-between"><span className="font-bold text-gray-500">Designation</span><span className="font-bold">{record.designation}</span></div>
-              <div className="flex justify-between"><span className="font-bold text-gray-500">Date of Joining</span><span className="font-bold">{employee?.joiningDate}</span></div>
-              <div className="flex justify-between"><span className="font-bold text-gray-500">Bank Account</span><span className="font-bold">{employee?.bankDetails.accountNumber}</span></div>
-              <div className="flex justify-between"><span className="font-bold text-gray-500">PAN Number</span><span className="font-bold">{employee?.pan}</span></div>
-              <div className="flex justify-between"><span className="font-bold text-gray-500">Paid Days</span><span className="font-bold">{record.presentDays} / {record.totalDays}</span></div>
-              <div className="flex justify-between"><span className="font-bold text-gray-500">LOP Days</span><span className="font-bold text-red-600">{record.lopDays}</span></div>
-           </div>
+        {/* Title */}
+        <div className="text-center mb-6">
+            <h2 className="text-[#0854a0] font-bold text-sm uppercase tracking-wide">Payslip for the month of {record.month}</h2>
         </div>
 
-        {/* Earnings & Deductions Table */}
-        <div className="flex border border-black mb-8">
-           <div className="w-1/2 border-r border-black">
-              <div className="bg-gray-100 p-2 font-bold text-center text-[12px] border-b border-black uppercase">Earnings</div>
-              <div className="p-4 space-y-2 text-[11px]">
-                 <div className="flex justify-between"><span>Basic Salary</span><span>{record.earnings.basic.toLocaleString()}</span></div>
-                 <div className="flex justify-between"><span>HRA</span><span>{record.earnings.hra.toLocaleString()}</span></div>
-                 <div className="flex justify-between"><span>Conveyance</span><span>{record.earnings.conveyance.toLocaleString()}</span></div>
-                 <div className="flex justify-between"><span>Special Allowance</span><span>{record.earnings.specialAllowance.toLocaleString()}</span></div>
-                 {record.earnings.incentive > 0 && <div className="flex justify-between"><span>Incentive / Bonus</span><span>{record.earnings.incentive.toLocaleString()}</span></div>}
-              </div>
-              <div className="border-t border-black p-2 flex justify-between font-bold text-[12px] bg-gray-50">
-                 <span>Gross Earnings</span>
-                 <span>₹ {record.grossPay.toLocaleString()}</span>
-              </div>
-           </div>
-           <div className="w-1/2">
-              <div className="bg-gray-100 p-2 font-bold text-center text-[12px] border-b border-black uppercase">Deductions</div>
-              <div className="p-4 space-y-2 text-[11px]">
-                 <div className="flex justify-between"><span>Provident Fund</span><span>{record.deductions.pf.toLocaleString()}</span></div>
-                 <div className="flex justify-between"><span>Professional Tax</span><span>{record.deductions.pt.toLocaleString()}</span></div>
-                 <div className="flex justify-between"><span>TDS / Tax</span><span>{record.deductions.tds.toLocaleString()}</span></div>
-              </div>
-              <div className="border-t border-black p-2 flex justify-between font-bold text-[12px] bg-gray-50 mt-auto">
-                 <span>Total Deductions</span>
-                 <span>₹ {record.totalDeductions.toLocaleString()}</span>
-              </div>
-           </div>
+        {/* Main Content Border Box */}
+        <div className="border-2 border-black">
+            {/* Employee Details */}
+            <div className="grid grid-cols-2 border-b-2 border-black p-4 gap-y-1 gap-x-8">
+                <div className="space-y-1.5">
+                    <div className="flex"><span className="w-28 font-bold text-gray-700">Employee ID</span><span className="font-bold">: {record.employeeId}</span></div>
+                    <div className="flex"><span className="w-28 font-bold text-gray-700">Date of Birth</span><span className="font-bold">: {employee ? '01-Jan-1990' : 'N/A'}</span></div>
+                    <div className="flex"><span className="w-28 font-bold text-gray-700">Designation</span><span className="font-bold">: {record.designation}</span></div>
+                    <div className="flex"><span className="w-28 font-bold text-gray-700">Department</span><span className="font-bold">: {employee?.department}</span></div>
+                    <div className="flex"><span className="w-28 font-bold text-gray-700">PF Number</span><span className="font-bold">: BLR/12345/000</span></div>
+                </div>
+                <div className="space-y-1.5">
+                    <div className="flex"><span className="w-32 font-bold text-gray-700">Employee Name</span><span className="font-bold">: {record.employeeName}</span></div>
+                    <div className="flex"><span className="w-32 font-bold text-gray-700">Joining Date</span><span className="font-bold">: {employee?.joiningDate}</span></div>
+                    <div className="flex"><span className="w-32 font-bold text-gray-700">Location</span><span className="font-bold">: {branchLocation}</span></div>
+                    <div className="flex"><span className="w-32 font-bold text-gray-700">PAN Number</span><span className="font-bold">: {employee?.pan}</span></div>
+                    <div className="flex"><span className="w-32 font-bold text-gray-700">UAN Number</span><span className="font-bold">: 100000000000</span></div>
+                </div>
+            </div>
+
+            {/* Financials Grid */}
+            <div className="flex min-h-[300px]">
+                {/* Earnings */}
+                <div className="w-[40%] border-r-2 border-black flex flex-col">
+                    <div className="font-bold border-b border-black p-1.5 bg-gray-100 flex justify-between">
+                        <span>EARNINGS</span>
+                        <span>Amount (Rs.)</span>
+                    </div>
+                    <div className="p-2 space-y-3 flex-1">
+                        <div className="flex justify-between"><span>Basic Salary</span><span className="font-medium">{record.earnings.basic.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
+                        <div className="flex justify-between"><span>House Rent Allowance</span><span className="font-medium">{record.earnings.hra.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
+                        <div className="flex justify-between"><span>Conveyance</span><span className="font-medium">{record.earnings.conveyance.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
+                        <div className="flex justify-between"><span>Special Allowance</span><span className="font-medium">{record.earnings.specialAllowance.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
+                        {record.earnings.incentive > 0 && <div className="flex justify-between"><span>Incentive / Bonus</span><span className="font-medium">{record.earnings.incentive.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>}
+                    </div>
+                    <div className="border-t border-black p-2 font-bold flex justify-between bg-gray-50 mt-auto">
+                        <span>Total Earnings Rs.</span>
+                        <span>{record.grossPay.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span>
+                    </div>
+                </div>
+
+                {/* Deductions */}
+                <div className="w-[30%] border-r-2 border-black flex flex-col">
+                    <div className="font-bold border-b border-black p-1.5 bg-gray-100 flex justify-between">
+                        <span>DEDUCTIONS</span>
+                        <span>Amount (Rs.)</span>
+                    </div>
+                    <div className="p-2 space-y-3 flex-1">
+                        <div className="flex justify-between"><span>Provident Fund</span><span className="font-medium">{record.deductions.pf.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
+                        <div className="flex justify-between"><span>Professional Tax</span><span className="font-medium">{record.deductions.pt.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
+                        <div className="flex justify-between"><span>Tax Deducted (TDS)</span><span className="font-medium">{record.deductions.tds.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
+                    </div>
+                    <div className="border-t border-black p-2 font-bold flex justify-between bg-gray-50 mt-auto">
+                        <span>Total Deductions Rs.</span>
+                        <span>{record.totalDeductions.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span>
+                    </div>
+                </div>
+
+                {/* Summary / Attendance */}
+                <div className="w-[30%] flex flex-col">
+                    <div className="p-3 space-y-3 border-b border-black flex-1">
+                        <div className="flex justify-between"><span className="font-bold text-gray-600">STANDARD DAYS</span><span className="font-bold">: {record.totalDays}</span></div>
+                        <div className="flex justify-between"><span className="font-bold text-gray-600">DAYS WORKED</span><span className="font-bold">: {record.presentDays}</span></div>
+                        <div className="flex justify-between"><span className="font-bold text-gray-600">LOP DAYS</span><span className="font-bold text-red-600">: {record.lopDays}</span></div>
+                    </div>
+                    <div className="p-3 border-b border-black flex-1 bg-gray-50/50">
+                        <div className="font-bold mb-2 underline decoration-gray-300 underline-offset-4">PAYMENT DETAILS</div>
+                        <div className="space-y-2 text-[10px]">
+                            <div className="flex"><span className="w-16 font-bold text-gray-500">PAYMENT</span><span className="font-bold">: BANK TRANSFER</span></div>
+                            <div className="flex"><span className="w-16 font-bold text-gray-500">BANK</span><span className="font-bold uppercase">: {employee?.bankDetails.bankName || 'N/A'}</span></div>
+                            <div className="flex"><span className="w-16 font-bold text-gray-500">A/C No.</span><span className="font-bold">: {employee?.bankDetails.accountNumber || 'N/A'}</span></div>
+                        </div>
+                    </div>
+                    <div className="p-3 bg-[#f0f0f0] font-black text-right border-t-2 border-black h-16 flex flex-col justify-center">
+                        <span className="text-[9px] text-gray-500 uppercase tracking-widest mb-1">Net Salary Rs.</span>
+                        <span className="text-xl">{record.netPay.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span>
+                    </div>
+                </div>
+            </div>
         </div>
 
-        {/* Net Pay */}
-        <div className="border border-black p-4 bg-blue-50/50 mb-12 flex justify-between items-center">
-           <div>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">Net Payable Amount</p>
-              <p className="text-[9px] italic mt-1">(In words: Rupees Only)</p>
-           </div>
-           <div className="text-2xl font-black text-[#0854a0]">
-              ₹ {record.netPay.toLocaleString('en-IN', {minimumFractionDigits: 2})}
-           </div>
-        </div>
-
-        {/* Footer */}
-        <div className="mt-auto text-[9px] text-center text-gray-500">
-           <p>This is a computer-generated payslip and does not require a signature.</p>
-           <p>{COMPANY_NAME} | Regd Office: Bengaluru, India.</p>
+        {/* Footer Notes */}
+        <div className="mt-6 border border-black p-3 text-[10px]">
+            <p className="font-bold mb-1">Note:</p>
+            <p className="mb-1">1. This is a system generated report. This does not require any signature.</p>
+            <p>2. Private and Confidential Disclaimer: This payslip has been generated by the {COMPANY_NAME} payroll service provider. All compensation information has been treated as confidential.</p>
         </div>
       </div>
     );

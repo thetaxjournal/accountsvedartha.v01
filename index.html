@@ -7,12 +7,19 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Dancing+Script:wght@600&display=swap" rel="stylesheet">
     <style>
+      :root {
+        /* Fluid typography: Base size scales between 14px and 18px depending on screen width */
+        font-size: clamp(14px, 0.8rem + 0.5vw, 18px);
+      }
+
       body {
         font-family: 'Inter', sans-serif;
         background-color: #f3f4f6;
         -webkit-font-smoothing: antialiased;
         margin: 0;
         padding: 0;
+        /* Reset body font size to base relative unit if needed, but inheriting from root is standard */
+        font-size: 1rem; 
       }
       
       @media print {
@@ -26,6 +33,7 @@
           overflow: visible !important;
           background: #fff !important;
           width: 210mm !important;
+          font-size: 12pt !important; /* Fixed size for print */
         }
 
         #root, .no-print {

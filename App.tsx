@@ -58,7 +58,19 @@ const App: React.FC = () => {
 
   // Auth Listener (Only for Firebase Auth users, Custom users handled in handleLogin)
   useEffect(() => {
-    // Standard Firebase Auth
+    // 1. Check LocalStorage for persisted custom session
+    const storedUser = localStorage.getItem('vedartha_user');
+    if (storedUser) {
+      try {
+        const parsedUser = JSON.parse(storedUser);
+        handleLogin(parsedUser);
+      } catch (e) {
+        console.error("Failed to restore session", e);
+        localStorage.removeItem('vedartha_user');
+      }
+    }
+
+    // 2. Standard Firebase Auth
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
         setUser(currentUser);
@@ -73,9 +85,10 @@ const App: React.FC = () => {
         setUserProfile(mockProfile);
       } else {
         // If not Firebase Auth, check if we have a manually set user (Custom Staff/Client)
-        // If user is null but we set it manually in handleLogin, don't reset unless explicitly logging out
-        // The onAuthStateChanged might fire with null on load if not persisted
-        // We handle persistence manually or rely on session
+        // If user is null but we set it manually in handleLogin (via localStorage restore), don't reset.
+        if (!localStorage.getItem('vedartha_user')) {
+             // Only reset if no persistent session found
+        }
       }
       setLoading(false);
     });
@@ -164,6 +177,7 @@ const App: React.FC = () => {
     setUser(userObj);
     
     if (userObj.isClient) {
+        // Client Portal
         setUserProfile({
             uid: userObj.uid,
             email: userObj.email,
@@ -172,8 +186,18 @@ const App: React.FC = () => {
             allowedBranchIds: [],
             clientId: userObj.clientId
         });
+    } else if (userObj.isBranchUser) {
+        // Branch Manager (Direct Branch Portal Login)
+        setUserProfile({
+            uid: userObj.uid,
+            email: userObj.email,
+            displayName: userObj.displayName,
+            role: UserRole.BRANCH_MANAGER,
+            allowedBranchIds: userObj.allowedBranchIds || []
+        });
+        setActiveBranchId(userObj.allowedBranchIds[0]); // Auto-select branch
     } else if (userObj.isStaff) {
-        // Handle Custom Staff Login (Admin, Branch Manager, Accountant, Employee)
+        // Custom Staff Login (Admin, Accountant, Employee)
         setUserProfile({
             uid: userObj.uid,
             email: userObj.email,
@@ -188,6 +212,7 @@ const App: React.FC = () => {
 
   const handleLogout = () => {
     signOut(auth);
+    localStorage.removeItem('vedartha_user'); // Clear persisted session
     setUser(null);
     setUserProfile(null);
   };
@@ -405,7 +430,77 @@ const App: React.FC = () => {
   };
 
   const handleUpdateEmployee = async (emp: Employee) => {
-    await setDoc(doc(db, 'employees', emp.id), emp);
+    const batch = writeBatch(db);
+    
+    // 1. Update Employee Record
+    batch.set(doc(db, 'employees', emp.id), emp);
+
+    // 2. Sync User Access (Fix for legacy/missing users)
+    const usersRef = collection(db, 'users');
+    const q = query(usersRef, where('employeeId', '==', emp.id));
+    const snapshot = await getDocs(q);
+
+    if (!snapshot.empty) {
+      // Update existing user doc
+      const userDoc = snapshot.docs[0];
+      batch.update(userDoc.ref, {
+          displayName: emp.name,
+          allowedBranchIds: [emp.branchId],
+          role: UserRole.EMPLOYEE
+      });
+    } else {
+      // Create new user doc if missing (Self-healing)
+      const newUserRef = doc(collection(db, 'users'));
+      batch.set(newUserRef, {
+          uid: newUserRef.id,
+          email: emp.id,
+          password: emp.id, // Default to ID
+          displayName: emp.name,
+          role: UserRole.EMPLOYEE,
+          allowedBranchIds: [emp.branchId],
+          employeeId: emp.id
+      });
+    }
+
+    await batch.commit();
+  };
+
+  const handleResetEmployeeAccess = async (emp: Employee) => {
+      setLoading(true);
+      try {
+          const usersRef = collection(db, 'users');
+          const q = query(usersRef, where('employeeId', '==', emp.id));
+          const snapshot = await getDocs(q);
+          const batch = writeBatch(db);
+
+          if (!snapshot.empty) {
+              // User exists: Reset Password to ID
+              const userDoc = snapshot.docs[0];
+              batch.update(userDoc.ref, {
+                  password: emp.id,
+                  email: emp.id // Ensure email (login id) matches ID
+              });
+          } else {
+              // User missing: Create new
+              const newUserRef = doc(collection(db, 'users'));
+              batch.set(newUserRef, {
+                  uid: newUserRef.id,
+                  email: emp.id,
+                  password: emp.id, 
+                  displayName: emp.name,
+                  role: UserRole.EMPLOYEE,
+                  allowedBranchIds: [emp.branchId],
+                  employeeId: emp.id
+              });
+          }
+          await batch.commit();
+          alert(`Access Credentials Reset Successfully.\n\nLogin ID: ${emp.id}\nPassword: ${emp.id}`);
+      } catch (err) {
+          console.error(err);
+          alert('Failed to reset access credentials.');
+      } finally {
+          setLoading(false);
+      }
   };
 
   const handleProcessPayroll = async (records: PayrollRecord[]) => {
@@ -428,6 +523,17 @@ const App: React.FC = () => {
     return <Login onLogin={handleLogin} />;
   }
 
+  // --- ROLE BASED ACCESS LOGIC (MOVED UP) ---
+  const currentUserRole = userProfile?.role || UserRole.ADMIN; // Default to Admin for fallback
+  const isBranchManager = currentUserRole === UserRole.BRANCH_MANAGER;
+  const isAccountant = currentUserRole === UserRole.ACCOUNTANT;
+  const isEmployee = currentUserRole === UserRole.EMPLOYEE;
+  
+  // Branch Managers/Accountants/Employees restricted to specific branches
+  const allowedBranches = (isBranchManager || isAccountant || isEmployee) && userProfile?.allowedBranchIds.length 
+    ? branches.filter(b => userProfile.allowedBranchIds.includes(b.id)) 
+    : branches;
+
   // --- CLIENT PORTAL ---
   if (user.isClient) {
     const currentClient = clients.find(c => c.id === user.clientId);
@@ -448,26 +554,17 @@ const App: React.FC = () => {
   }
 
   // --- EMPLOYEE PORTAL ---
-  if (userProfile?.role === UserRole.EMPLOYEE) {
-      const empData = employees.find(e => e.id === userProfile.employeeId);
+  if (isEmployee) {
+      const empData = employees.find(e => e.id === userProfile?.employeeId);
       return (
           <EmployeePortal 
               employee={empData}
-              payrollRecords={payrollRecords.filter(r => r.employeeId === userProfile.employeeId)}
+              payrollRecords={payrollRecords.filter(r => r.employeeId === userProfile?.employeeId)}
+              branches={allowedBranches}
               onLogout={handleLogout}
           />
       );
   }
-
-  // --- ROLE BASED ACCESS LOGIC ---
-  const currentUserRole = userProfile?.role || UserRole.ADMIN; // Default to Admin for fallback
-  const isBranchManager = currentUserRole === UserRole.BRANCH_MANAGER;
-  const isAccountant = currentUserRole === UserRole.ACCOUNTANT;
-  
-  // Branch Managers/Accountants restricted to specific branches
-  const allowedBranches = (isBranchManager || isAccountant) && userProfile?.allowedBranchIds.length 
-    ? branches.filter(b => userProfile.allowedBranchIds.includes(b.id)) 
-    : branches;
 
   // Branch Managers see tickets for their branch
   const filteredNotifications = isBranchManager 
@@ -544,6 +641,7 @@ const App: React.FC = () => {
             branches={allowedBranches}
             onAddEmployee={handleAddEmployee}
             onUpdateEmployee={handleUpdateEmployee}
+            onResetAccess={handleResetEmployeeAccess}
             onProcessPayroll={handleProcessPayroll}
           />
         );

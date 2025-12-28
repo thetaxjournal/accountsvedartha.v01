@@ -1,19 +1,16 @@
-
 import React, { useEffect, useRef, useState } from 'react';
 import { Html5Qrcode } from 'html5-qrcode';
-import { ScanLine, XCircle, ShieldCheck, Loader2, Camera, Upload, Image as ImageIcon, RefreshCw, ZoomIn, ZoomOut, Crop, FileText as FileTextIcon } from 'lucide-react';
+import { ScanLine, XCircle, ShieldCheck, Loader2, Camera, Upload, Image as ImageIcon, RefreshCw, ZoomIn, ZoomOut, Crop, FileText as FileTextIcon, Lock } from 'lucide-react';
 import { decodeSecureQR } from '../constants';
 import { Invoice, Payment } from '../types';
 import * as pdfjsLib from 'pdfjs-dist';
 
 // --- ROBUST WORKER CONFIGURATION ---
-// We fetch the worker script as text and create a local Blob URL.
-// This prevents "Cross-Origin Worker" errors common with CDNs.
 const configurePdfWorker = async () => {
     // @ts-ignore
     const pdfJs = pdfjsLib.default || pdfjsLib;
     
-    if (pdfJs.GlobalWorkerOptions.workerSrc) return; // Already configured
+    if (pdfJs.GlobalWorkerOptions.workerSrc) return; 
 
     const workerVersion = '3.11.174';
     const workerUrl = `https://esm.sh/pdfjs-dist@${workerVersion}/build/pdf.worker.min.js`;
@@ -25,12 +22,11 @@ const configurePdfWorker = async () => {
         const blob = new Blob([scriptText], { type: 'application/javascript' });
         pdfJs.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob);
     } catch (e) {
-        console.warn("Blob worker setup failed, falling back to CDN URL (might fail on some strict CSPs)", e);
+        console.warn("Blob worker setup failed, falling back to CDN URL", e);
         pdfJs.GlobalWorkerOptions.workerSrc = workerUrl;
     }
 };
 
-// Trigger config immediately
 configurePdfWorker().catch(console.error);
 
 interface ScannerProps {
@@ -49,14 +45,12 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [isPdfMode, setIsPdfMode] = useState(false);
   
-  // Zoom Controls
   const [zoomCapabilities, setZoomCapabilities] = useState<{min: number, max: number, step: number} | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
 
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Initialize Scanner Instance
   useEffect(() => {
     const timer = setTimeout(() => {
         if (!scannerRef.current && document.getElementById('reader')) {
@@ -77,7 +71,6 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
     };
   }, []);
 
-  // Handle Tab Switching
   useEffect(() => {
       if (!scannerRef.current) return;
 
@@ -119,6 +112,7 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
           (errorMessage) => { /* ignore frames */ }
       ).then(() => {
           setIsScanning(true);
+          setError(null);
           try {
               const tracks = (scanner as any).getRunningTrackCameraCapabilities(); 
               if (tracks && typeof tracks.zoom === 'object') {
@@ -132,7 +126,23 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
           } catch(e) { /* Zoom not supported */ }
       }).catch(err => {
           console.error("Camera start failed", err);
-          setError("Could not access camera. Please allow camera permissions in your browser.");
+          
+          let friendlyError = "Could not access camera.";
+          
+          if (typeof err === 'string') {
+              friendlyError = err;
+          } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+              friendlyError = "Camera access denied. Please reset permissions in your browser address bar.";
+          } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+              friendlyError = "No camera device found on this system.";
+          } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+              friendlyError = "Camera is already in use by another application.";
+          } else if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+              friendlyError = "Camera access requires a secure HTTPS connection.";
+          }
+
+          setError(friendlyError);
+          setIsScanning(false);
       });
   };
 
@@ -140,9 +150,11 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
       const newZoom = Number(event.target.value);
       setZoomLevel(newZoom);
       if (scannerRef.current) {
-          (scannerRef.current as any).applyVideoConstraints({
-              advanced: [{ zoom: newZoom }]
-          });
+          try {
+            (scannerRef.current as any).applyVideoConstraints({
+                advanced: [{ zoom: newZoom }]
+            });
+          } catch (e) { console.warn('Zoom apply failed', e); }
       }
   };
 
@@ -158,7 +170,6 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
       setAnalyzing(true);
       setSmartMessage("Verifying Digital Signature...");
       
-      // Simulate Processing Delay for better UX
       setTimeout(() => {
           const decoded = decodeSecureQR(text);
           if (decoded && decoded._sec === 'VED') {
@@ -184,7 +195,6 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
             const w = img.naturalWidth;
             const h = img.naturalHeight;
 
-            // Smart Crop Strategies for A4 Documents
             const strategies = [
                 { name: "Full Scan", x: 0, y: 0, w: w, h: h },
                 { name: "Bottom Right (Footer)", x: w * 0.5, y: h * 0.6, w: w * 0.5, h: h * 0.4 },
@@ -194,11 +204,10 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
 
             for (const strat of strategies) {
                 setSmartMessage(`Analysing: ${strat.name}...`);
-                await new Promise(r => setTimeout(r, 100)); // UI Breath
+                await new Promise(r => setTimeout(r, 100));
 
                 canvas.width = strat.w;
                 canvas.height = strat.h;
-                // Clear context to avoid artifacts
                 ctx.clearRect(0,0, strat.w, strat.h);
                 ctx.drawImage(img, strat.x, strat.y, strat.w, strat.h, 0, 0, strat.w, strat.h);
                 
@@ -209,12 +218,10 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
                     const file = new File([blob], "temp_crop.jpg", { type: "image/jpeg" });
                     const result = await scannerRef.current!.scanFile(file, false);
                     if (result) {
-                        resolve(result); // Found it!
+                        resolve(result);
                         return;
                     }
-                } catch (err) {
-                    // Strategy failed, continue to next
-                }
+                } catch (err) {}
             }
             reject("No readable QR found in this document.");
         };
@@ -223,43 +230,30 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
     });
   };
 
-  // Converts PDF first page to Base64 Image
   const convertPdfToImage = async (file: File): Promise<string> => {
       // @ts-ignore
       const pdf = pdfjsLib.default || pdfjsLib;
-      
-      if (!pdf.GlobalWorkerOptions.workerSrc) {
-          await configurePdfWorker();
-      }
+      if (!pdf.GlobalWorkerOptions.workerSrc) await configurePdfWorker();
       
       setSmartMessage("Parsing PDF Document...");
-      
       try {
         const arrayBuffer = await file.arrayBuffer();
-        
         const loadingTask = pdf.getDocument({
             data: arrayBuffer,
-            cMapUrl: 'https://esm.sh/pdfjs-dist@3.11.174/cmaps/', // Using standard CMAPS from ESM
+            cMapUrl: 'https://esm.sh/pdfjs-dist@3.11.174/cmaps/',
             cMapPacked: true,
         });
-
         const doc = await loadingTask.promise;
-        const page = await doc.getPage(1); // Get first page
-        
-        // Scale 2.0 provides good balance of quality vs memory
+        const page = await doc.getPage(1);
         const viewport = page.getViewport({ scale: 2.0 }); 
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
-        
         if (!context) throw new Error("Canvas context failed");
-        
         canvas.height = viewport.height;
         canvas.width = viewport.width;
-
         await page.render({ canvasContext: context, viewport: viewport }).promise;
         return canvas.toDataURL('image/jpeg', 0.95);
       } catch (e: any) {
-          console.error("PDF Parsing Error", e);
           throw new Error(`PDF Error: ${e.message}`);
       }
   };
@@ -278,7 +272,6 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
 
       try {
           let imageBase64 = '';
-
           if (isPdf) {
               setIsPdfMode(true);
               setSmartMessage("Reading PDF Invoice...");
@@ -291,22 +284,16 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
                   reader.readAsDataURL(file);
               });
           }
-
-          setUploadedImage(imageBase64); // Show preview
-          
+          setUploadedImage(imageBase64);
           setSmartMessage("Scanning Document...");
-          
-          // Try Smart Crops directly which includes Full Scan as step 1
           const smartResult = await attemptSmartCrops(imageBase64);
           processResult(smartResult);
-
       } catch (err: any) {
           console.error(err);
           setAnalyzing(false);
           setSmartMessage(null);
-          setError(err.message || (typeof err === 'string' ? err : "Could not process this file."));
+          setError(err.message || "Could not process this file.");
       }
-      
       e.target.value = '';
   };
 
@@ -325,7 +312,6 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
 
   const renderResultCard = () => {
      if (!decodedData) return null;
-
      const dbInvoice = invoices.find(i => i.id === decodedData.id);
      const dbPayment = payments.find(p => p.id === decodedData.id);
      const data = dbInvoice || dbPayment || decodedData;
@@ -346,13 +332,11 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
                  <RefreshCw size={20} />
              </button>
           </div>
-
           <div className="p-8 max-h-[60vh] overflow-y-auto custom-scrollbar">
              <div className="text-center mb-8">
                 <h2 className="text-2xl font-black text-gray-900 tracking-tight uppercase">{type === 'INV' ? 'TAX INVOICE' : 'PAYMENT RECEIPT'}</h2>
                 <p className="text-base font-bold text-blue-600 font-mono mt-1 tracking-wide">{data.invoiceNumber || data.id}</p>
              </div>
-
              <div className="bg-gray-50 p-6 rounded-2xl border border-gray-200 mb-8 space-y-4">
                 <div className="flex justify-between items-center border-b border-gray-200 pb-3">
                     <span className="text-[11px] font-black text-gray-500 uppercase tracking-widest">Entity Name</span>
@@ -369,7 +353,6 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
                     </span>
                 </div>
              </div>
-
              <div className="flex justify-between items-end bg-[#1c2d3d] text-white p-6 rounded-2xl shadow-lg">
                 <div className="flex flex-col">
                     <span className="text-[10px] font-bold opacity-60 uppercase tracking-[0.2em] mb-1">Total Value</span>
@@ -384,8 +367,6 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
 
   return (
     <div className="flex flex-col items-center justify-center min-h-[600px] animate-in fade-in duration-500 pb-10 px-4 w-full max-w-4xl mx-auto">
-       
-       {/* Mode Switcher */}
        {!decodedData && (
            <div className="bg-white p-1.5 rounded-2xl shadow-sm border border-gray-200 mb-8 flex w-full max-w-xs">
                <button 
@@ -410,18 +391,15 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
            </div>
        )}
 
-       {/* Scanner Area */}
        {!decodedData && (
          <div className="relative w-full max-w-[360px] flex flex-col items-center">
              <div className="relative w-full aspect-square bg-black rounded-[40px] overflow-hidden border-[8px] border-white shadow-[0_20px_50px_-10px_rgba(0,0,0,0.3)] ring-1 ring-gray-200">
-                {/* The Reader Div */}
                 <div 
                     id="reader" 
                     className={`w-full h-full object-cover ${activeTab === 'upload' ? 'hidden' : 'block'}`}
                     style={{ background: 'black' }}
                 ></div>
 
-                {/* Upload Area */}
                 {activeTab === 'upload' && (
                     <div className="absolute inset-0 bg-gray-900 flex flex-col items-center justify-center cursor-pointer hover:bg-gray-800 transition-colors" onClick={() => fileInputRef.current?.click()}>
                         {uploadedImage ? (
@@ -435,36 +413,24 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
                                 <p className="text-[10px] font-bold text-gray-400">Supports PDF, JPG, PNG</p>
                             </div>
                         )}
-                        {/* ACCEPT PDF NOW */}
                         <input type="file" ref={fileInputRef} className="hidden" accept="image/*,application/pdf" onChange={handleFileUpload} />
                     </div>
                 )}
                 
-                {/* Overlays */}
                 {!error && !analyzing && (activeTab === 'camera' || (activeTab === 'upload' && !uploadedImage)) && (
                     <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
                         {activeTab === 'camera' && (
                             <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-emerald-400 to-transparent opacity-100 animate-[scan_2s_ease-in-out_infinite] z-20 shadow-[0_0_20px_#10b981]"></div>
                         )}
-                        
-                        {/* High Contrast Frame */}
                         <div className="w-64 h-64 relative z-10 opacity-90">
                             <div className="absolute top-0 left-0 w-10 h-10 border-t-4 border-l-4 border-white rounded-tl-3xl drop-shadow-md"></div>
                             <div className="absolute top-0 right-0 w-10 h-10 border-t-4 border-r-4 border-white rounded-tr-3xl drop-shadow-md"></div>
                             <div className="absolute bottom-0 left-0 w-10 h-10 border-b-4 border-l-4 border-white rounded-bl-3xl drop-shadow-md"></div>
                             <div className="absolute bottom-0 right-0 w-10 h-10 border-b-4 border-r-4 border-white rounded-br-3xl drop-shadow-md"></div>
                         </div>
-
-                        {activeTab === 'camera' && (
-                            <div className="absolute bottom-8 bg-black/80 backdrop-blur-md px-6 py-2 rounded-full flex items-center space-x-3 border border-white/20 shadow-xl">
-                                <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_10px_#10b981]"></div>
-                                <span className="text-[11px] font-black text-white uppercase tracking-widest">Scanning...</span>
-                            </div>
-                        )}
                     </div>
                 )}
 
-                {/* Analysis Loader */}
                 {analyzing && (
                     <div className="absolute inset-0 bg-black/90 backdrop-blur-sm z-30 flex flex-col items-center justify-center text-white text-center p-6">
                         {smartMessage ? (
@@ -476,25 +442,23 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
                     </div>
                 )}
 
-                {/* Error Overlay - High Contrast */}
                 {error && (
-                    <div className="absolute inset-0 bg-white z-40 flex flex-col items-center justify-center p-8 text-center">
-                        <div className="p-4 bg-rose-100 rounded-full mb-6">
-                            <XCircle size={40} className="text-rose-600" />
+                    <div className="absolute inset-0 bg-white z-40 flex flex-col items-center justify-center p-8 text-center animate-in fade-in duration-300">
+                        <div className="p-4 bg-rose-50 rounded-full mb-6 ring-4 ring-rose-100">
+                            {error.includes("permission") ? <Lock size={40} className="text-rose-600" /> : <XCircle size={40} className="text-rose-600" />}
                         </div>
-                        <h4 className="text-lg font-black text-gray-900 uppercase mb-2 tracking-tight">Detection Failed</h4>
-                        <p className="text-xs font-bold text-gray-500 leading-relaxed mb-8">{error}</p>
+                        <h4 className="text-lg font-black text-gray-900 uppercase mb-2 tracking-tight">Access Error</h4>
+                        <p className="text-xs font-bold text-gray-500 leading-relaxed mb-8 max-w-[200px]">{error}</p>
                         <button 
                             onClick={() => { setError(null); setUploadedImage(null); if(activeTab === 'camera') startCamera(scannerRef.current!); }}
-                            className="w-full py-4 bg-[#1c2d3d] text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-black transition-all shadow-lg"
+                            className="w-full py-4 bg-[#1c2d3d] text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-black transition-all shadow-lg active:scale-95"
                         >
-                            Retry Scan
+                            Retry
                         </button>
                     </div>
                 )}
              </div>
 
-             {/* Zoom Slider - Only show if camera is active and capabilities exist */}
              {activeTab === 'camera' && !error && !analyzing && zoomCapabilities && (
                  <div className="mt-6 w-full px-4 flex items-center space-x-4 bg-white/50 backdrop-blur rounded-xl p-2 border border-gray-200">
                      <ZoomOut size={16} className="text-gray-500" />
@@ -513,7 +477,6 @@ const Scanner: React.FC<ScannerProps> = ({ invoices, payments }) => {
          </div>
        )}
 
-       {/* Result View */}
        {decodedData && renderResultCard()}
 
        <style>{`
