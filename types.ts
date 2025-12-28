@@ -168,6 +168,7 @@ export interface Employee {
 
 export interface PayrollRecord {
   id: string; // Run ID
+  payslipNo?: string; // Unique Serial e.g. 911001/04/2025
   month: string; // e.g., "October 2023"
   year: number;
   employeeId: string;
@@ -193,6 +194,7 @@ export interface PayrollRecord {
     pf: number;
     pt: number;
     tds: number;
+    advanceSalary: number; // New: Advance Salary Deduction
     lopAmount: number;
   };
   grossPay: number;

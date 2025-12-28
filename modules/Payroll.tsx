@@ -6,8 +6,9 @@ import {
   AlertCircle, Key, Calculator, Briefcase, Building2, CreditCard,
   Upload, FileDown, Loader2, Check
 } from 'lucide-react';
+import QRCode from 'react-qr-code';
 import { Employee, PayrollRecord, Branch, SalaryStructure } from '../types';
-import { COMPANY_NAME, COMPANY_LOGO } from '../constants';
+import { COMPANY_NAME, COMPANY_LOGO, generateSecureQR } from '../constants';
 
 interface PayrollProps {
   employees: Employee[];
@@ -41,6 +42,7 @@ const Payroll: React.FC<PayrollProps> = ({
   const [lopData, setLopData] = useState<{ [empId: string]: number }>({}); // Loss of Pay days
   const [incentiveData, setIncentiveData] = useState<{ [empId: string]: number }>({}); 
   const [encashData, setEncashData] = useState<{ [empId: string]: number }>({}); // Leave Encashment Days
+  const [advanceData, setAdvanceData] = useState<{ [empId: string]: number }>({}); // Advance Salary
 
   // UI Processing State
   const [isProcessing, setIsProcessing] = useState(false);
@@ -75,8 +77,8 @@ const Payroll: React.FC<PayrollProps> = ({
   // --- HANDLERS ---
 
   const handleNewEmployee = () => {
-    // ID Format: 834 (City Code) + Sequence
-    const nextId = `834${1000 + employees.length + 1}`;
+    // ID Format: 91 + Sequence (e.g., 911001)
+    const nextId = `91${1000 + employees.length + 1}`;
     setEditingEmployee({
       id: nextId,
       name: '', designation: '', department: '', joiningDate: new Date().toISOString().split('T')[0],
@@ -146,9 +148,9 @@ const Payroll: React.FC<PayrollProps> = ({
   };
 
   const downloadCSVTemplate = () => {
-      const headers = "EmployeeCode,EmployeeName,LOP_Days,Incentive_Amount,Leave_Encashment_Days";
+      const headers = "EmployeeCode,EmployeeName,LOP_Days,Incentive_Amount,Leave_Encashment_Days,Advance_Salary";
       const rows = employees.filter(e => e.status === 'Active').map(e => 
-          `${e.id},${e.name.replace(/,/g, '')},0,0,0`
+          `${e.id},${e.name.replace(/,/g, '')},0,0,0,0`
       ).join('\n');
       
       const csvContent = "data:text/csv;charset=utf-8," + headers + "\n" + rows;
@@ -184,6 +186,7 @@ const Payroll: React.FC<PayrollProps> = ({
           const newLop: { [key: string]: number } = {};
           const newIncentive: { [key: string]: number } = {};
           const newEncash: { [key: string]: number } = {};
+          const newAdvance: { [key: string]: number } = {};
           let processedCount = 0;
 
           setProcessStep('Updating Attendance Records...');
@@ -195,13 +198,14 @@ const Payroll: React.FC<PayrollProps> = ({
               if (!line) continue;
               
               const parts = line.split(',');
-              if (parts.length >= 5) {
+              if (parts.length >= 6) {
                   const empId = parts[0].trim();
                   // Validate if employee exists
                   if (employees.some(e => e.id === empId)) {
                       newLop[empId] = parseFloat(parts[2]) || 0;
                       newIncentive[empId] = parseFloat(parts[3]) || 0;
                       newEncash[empId] = parseFloat(parts[4]) || 0;
+                      newAdvance[empId] = parseFloat(parts[5]) || 0;
                       processedCount++;
                   }
               }
@@ -210,6 +214,7 @@ const Payroll: React.FC<PayrollProps> = ({
           setLopData(prev => ({ ...prev, ...newLop }));
           setIncentiveData(prev => ({ ...prev, ...newIncentive }));
           setEncashData(prev => ({ ...prev, ...newEncash }));
+          setAdvanceData(prev => ({ ...prev, ...newAdvance }));
           
           setProcessStep(`Imported ${processedCount} Records!`);
           setProcessSuccess(true);
@@ -259,11 +264,16 @@ const Payroll: React.FC<PayrollProps> = ({
       const pf = Math.round(emp.salary.pfDeduction); 
       const pt = emp.salary.ptDeduction;
       const tds = emp.salary.tdsDeduction;
+      const advance = advanceData[emp.id] || 0;
       
-      const totalDeductions = pf + pt + tds;
+      const totalDeductions = pf + pt + tds + advance;
       
+      // Payslip Serial Code
+      const serialCode = `${emp.id}${Date.now().toString().slice(-4)}`;
+
       return {
         id: `PAY-${Date.now()}-${emp.id}`,
+        payslipNo: serialCode,
         month: selectedMonth,
         year: new Date().getFullYear(),
         employeeId: emp.id,
@@ -282,7 +292,7 @@ const Payroll: React.FC<PayrollProps> = ({
           leaveEncashment
         },
         deductions: {
-          pf, pt, tds, lopAmount: 0 
+          pf, pt, tds, advanceSalary: advance, lopAmount: 0 
         },
         grossPay: totalEarnings,
         totalDeductions,
@@ -305,11 +315,19 @@ const Payroll: React.FC<PayrollProps> = ({
 
   const handlePrintPayslip = (record: PayrollRecord) => {
     setViewingPayslip(record);
+    const originalTitle = document.title;
+    
+    // Auto-download Format: Payslip-911001_April25
+    const monthShort = record.month.split(' ')[0]; // Take first word of "April 2025"
+    const yearShort = record.year.toString().slice(-2);
+    document.title = `Payslip-${record.employeeId}_${monthShort}${yearShort}`; 
+    
     setIsPrinting(true);
     setTimeout(() => {
       window.print();
       setIsPrinting(false);
       setViewingPayslip(null);
+      document.title = originalTitle; // Restore
     }, 500);
   };
 
@@ -346,6 +364,16 @@ const Payroll: React.FC<PayrollProps> = ({
     const branchName = branch ? branch.name : 'Head Office';
     const branchLocation = branch ? branch.address.city : 'Bengaluru';
 
+    // Unique QR Code generation for scanner
+    const qrValue = generateSecureQR({
+        type: 'PAYSLIP',
+        id: record.id,
+        empId: record.employeeId,
+        month: record.month,
+        netPay: record.netPay,
+        generatedDate: record.generatedDate
+    });
+
     return (
       <div className="bg-white w-[210mm] min-h-[297mm] p-[10mm] text-black font-sans text-[11px] leading-tight relative print:p-[10mm]">
         {/* Header */}
@@ -358,8 +386,16 @@ const Payroll: React.FC<PayrollProps> = ({
         </div>
 
         {/* Title */}
-        <div className="text-center mb-6">
-            <h2 className="text-[#0854a0] font-bold text-sm uppercase tracking-wide">Payslip for the month of {record.month}</h2>
+        <div className="text-center mb-6 flex justify-between items-center px-4">
+            <div className="text-left">
+                <p className="text-[9px] font-bold text-gray-400 uppercase">Payslip No</p>
+                <p className="font-mono font-bold text-sm">{record.payslipNo || 'N/A'}</p>
+            </div>
+            <h2 className="text-[#0854a0] font-bold text-sm uppercase tracking-wide">Payslip for {record.month}</h2>
+            <div className="text-right">
+                <p className="text-[9px] font-bold text-gray-400 uppercase">Generated</p>
+                <p className="font-bold text-[10px]">{new Date(record.generatedDate).toLocaleDateString()}</p>
+            </div>
         </div>
 
         {/* Main Content Border Box */}
@@ -414,6 +450,9 @@ const Payroll: React.FC<PayrollProps> = ({
                         <div className="flex justify-between"><span>Provident Fund</span><span className="font-medium">{record.deductions.pf.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
                         <div className="flex justify-between"><span>Professional Tax</span><span className="font-medium">{record.deductions.pt.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
                         <div className="flex justify-between"><span>Tax Deducted (TDS)</span><span className="font-medium">{record.deductions.tds.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
+                        {(record.deductions.advanceSalary || 0) > 0 && (
+                            <div className="flex justify-between text-rose-600"><span>Advance Salary</span><span className="font-bold">{record.deductions.advanceSalary.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
+                        )}
                     </div>
                     <div className="border-t border-black p-2 font-bold flex justify-between bg-gray-50 mt-auto">
                         <span>Total Deductions Rs.</span>
@@ -428,12 +467,19 @@ const Payroll: React.FC<PayrollProps> = ({
                         <div className="flex justify-between"><span className="font-bold text-gray-600">DAYS WORKED</span><span className="font-bold">: {record.presentDays}</span></div>
                         <div className="flex justify-between"><span className="font-bold text-gray-600">LOP DAYS</span><span className="font-bold text-red-600">: {record.lopDays}</span></div>
                     </div>
-                    <div className="p-3 border-b border-black flex-1 bg-gray-50/50">
+                    <div className="p-3 border-b border-black flex-1 bg-gray-50/50 relative">
+                        {/* Unique QR Code for Payslip */}
+                        <div className="absolute right-2 top-2 opacity-10">
+                            <QRCode value={qrValue} size={64} />
+                        </div>
                         <div className="font-bold mb-2 underline decoration-gray-300 underline-offset-4">PAYMENT DETAILS</div>
                         <div className="space-y-2 text-[10px]">
                             <div className="flex"><span className="w-16 font-bold text-gray-500">PAYMENT</span><span className="font-bold">: BANK TRANSFER</span></div>
                             <div className="flex"><span className="w-16 font-bold text-gray-500">BANK</span><span className="font-bold uppercase">: {emp?.bankDetails.bankName || 'N/A'}</span></div>
                             <div className="flex"><span className="w-16 font-bold text-gray-500">A/C No.</span><span className="font-bold">: {emp?.bankDetails.accountNumber || 'N/A'}</span></div>
+                        </div>
+                        <div className="mt-4 flex justify-center">
+                             <QRCode value={qrValue} size={80} level="M" />
                         </div>
                     </div>
                     <div className="p-3 bg-[#f0f0f0] font-black text-right border-t-2 border-black h-16 flex flex-col justify-center">
@@ -564,7 +610,7 @@ const Payroll: React.FC<PayrollProps> = ({
             <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-8 border-b border-gray-100 pb-6 gap-4">
                <div>
                   <h3 className="text-lg font-black text-gray-800 uppercase tracking-tight">Run Payroll</h3>
-                  <p className="text-xs text-gray-400 font-bold mt-1">Step 1: Input LOP, Incentives & Encashments</p>
+                  <p className="text-xs text-gray-400 font-bold mt-1">Step 1: Input LOP, Incentives, Encashments & Advances</p>
                </div>
                
                <div className="flex items-center space-x-4">
@@ -616,7 +662,8 @@ const Payroll: React.FC<PayrollProps> = ({
                                    <th scope="col" className="px-6 py-3 text-left text-[10px] font-black text-gray-500 uppercase tracking-wider">Employee</th>
                                    <th scope="col" className="px-6 py-3 text-center text-[10px] font-black text-gray-500 uppercase tracking-wider">LOP Days</th>
                                    <th scope="col" className="px-6 py-3 text-center text-[10px] font-black text-gray-500 uppercase tracking-wider">Incentive (₹)</th>
-                                   <th scope="col" className="px-6 py-3 text-center text-[10px] font-black text-gray-500 uppercase tracking-wider">Leave Encash. Days</th>
+                                   <th scope="col" className="px-6 py-3 text-center text-[10px] font-black text-gray-500 uppercase tracking-wider">Encash Days</th>
+                                   <th scope="col" className="px-6 py-3 text-center text-[10px] font-black text-gray-500 uppercase tracking-wider">Advance (₹)</th>
                                </tr>
                            </thead>
                            <tbody className="bg-white divide-y divide-gray-100">
@@ -656,6 +703,15 @@ const Payroll: React.FC<PayrollProps> = ({
                                             className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-bold text-center focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all"
                                             value={encashData[emp.id] || 0}
                                             onChange={e => setEncashData({...encashData, [emp.id]: Number(e.target.value)})}
+                                         />
+                                     </td>
+                                     <td className="px-6 py-4 whitespace-nowrap text-center">
+                                         <input 
+                                            type="number" 
+                                            min="0"
+                                            className="w-24 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-bold text-center focus:border-amber-500 focus:ring-2 focus:ring-amber-100 outline-none transition-all"
+                                            value={advanceData[emp.id] || 0}
+                                            onChange={e => setAdvanceData({...advanceData, [emp.id]: Number(e.target.value)})}
                                          />
                                      </td>
                                   </tr>

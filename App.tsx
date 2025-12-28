@@ -19,7 +19,7 @@ import ClientPortal from './modules/ClientPortal';
 import EmployeePortal from './modules/EmployeePortal';
 
 import { auth, db } from './firebase';
-import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { onAuthStateChanged, signOut, signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
 import { 
   collection, 
   onSnapshot, 
@@ -172,6 +172,72 @@ const App: React.FC = () => {
       unsubPayroll();
     };
   }, [user]);
+
+  // Migration Effect for Employee IDs (834... -> 91...)
+  useEffect(() => {
+      const migrateEmployees = async () => {
+          if (!employees.length) return;
+          
+          // Check if any employee has old format '834'
+          const oldEmployees = employees.filter(e => e.id.startsWith('834'));
+          
+          if (oldEmployees.length > 0) {
+              console.log("Migrating employees...");
+              const batch = writeBatch(db);
+              
+              // We need to re-index them starting from 911001
+              let counter = 1;
+              
+              // Find existing '91' series max to avoid collision
+              const existingNewSeries = employees.filter(e => e.id.startsWith('91'));
+              if (existingNewSeries.length > 0) {
+                  const maxId = Math.max(...existingNewSeries.map(e => parseInt(e.id.substring(2))));
+                  counter = (maxId - 1000) + 1;
+              }
+
+              for (const emp of oldEmployees) {
+                  const newId = `91${1000 + counter}`;
+                  counter++;
+                  
+                  // 1. Create new Employee Doc
+                  const newEmpData = { ...emp, id: newId };
+                  const newEmpRef = doc(db, 'employees', newId);
+                  batch.set(newEmpRef, newEmpData);
+                  
+                  // 2. Delete old Employee Doc
+                  const oldEmpRef = doc(db, 'employees', emp.id);
+                  batch.delete(oldEmpRef);
+
+                  // 3. Update associated User Account (if exists)
+                  const usersQuery = query(collection(db, 'users'), where('employeeId', '==', emp.id));
+                  const userSnap = await getDocs(usersQuery);
+                  userSnap.forEach(uDoc => {
+                      batch.update(uDoc.ref, { 
+                          employeeId: newId,
+                          email: newId, // Update login ID
+                          password: newId // Reset password to new ID for consistency
+                      });
+                  });
+
+                  // 4. Update associated Payroll Records
+                  const payrollQuery = query(collection(db, 'payroll_records'), where('employeeId', '==', emp.id));
+                  const paySnap = await getDocs(payrollQuery);
+                  paySnap.forEach(pDoc => {
+                      batch.update(pDoc.ref, { employeeId: newId });
+                  });
+              }
+
+              try {
+                  await batch.commit();
+                  console.log("Employee ID Migration Successful");
+              } catch (err) {
+                  console.error("Migration Failed", err);
+              }
+          }
+      };
+
+      migrateEmployees();
+  }, [employees]);
 
   const handleLogin = (userObj: any) => {
     setUser(userObj);
@@ -512,6 +578,62 @@ const App: React.FC = () => {
     await batch.commit();
   };
 
+  // --- EMPLOYEE SECURITY HANDLERS ---
+  const handleEmployeeUpdateCredentials = async (newId: string, newPass: string) => {
+      if (!userProfile?.employeeId) return;
+      try {
+          const usersRef = collection(db, 'users');
+          const q = query(usersRef, where('employeeId', '==', userProfile.employeeId));
+          const snapshot = await getDocs(q);
+          
+          if (!snapshot.empty) {
+              const userDoc = snapshot.docs[0];
+              await updateDoc(userDoc.ref, {
+                  email: newId,
+                  password: newPass
+              });
+              alert('Credentials updated successfully. Please login with your new ID/Password next time.');
+          }
+      } catch (err) {
+          console.error(err);
+          alert('Failed to update credentials.');
+      }
+  };
+
+  const handleEmployeeLinkGoogle = async () => {
+      if (!userProfile?.employeeId) return;
+      try {
+          const provider = new GoogleAuthProvider();
+          // We trigger sign in to get the google account credentials
+          const result = await signInWithPopup(auth, provider);
+          const googleEmail = result.user.email;
+
+          if (!googleEmail) throw new Error("No email found in Google Account");
+
+          // Link this email to the Custom User Record in Firestore
+          const usersRef = collection(db, 'users');
+          const q = query(usersRef, where('employeeId', '==', userProfile.employeeId));
+          const snapshot = await getDocs(q);
+
+          if (!snapshot.empty) {
+              const userDoc = snapshot.docs[0];
+              await updateDoc(userDoc.ref, {
+                  email: googleEmail
+              });
+              
+              // Also update Employee Record email for consistency
+              await updateDoc(doc(db, 'employees', userProfile.employeeId), {
+                  email: googleEmail
+              });
+
+              alert(`Google Account Linked: ${googleEmail}\n\nYou can now use "Login with Google" on the login screen.`);
+          }
+      } catch (err: any) {
+          console.error(err);
+          alert(`Failed to link Google Account: ${err.message}`);
+      }
+  };
+
   // --- FILTERED DATA ---
   const activeInvoices = useMemo(() => invoices.filter(i => !i.archived), [invoices]);
   const activePayments = useMemo(() => payments.filter(p => !p.archived), [payments]);
@@ -562,6 +684,8 @@ const App: React.FC = () => {
               payrollRecords={payrollRecords.filter(r => r.employeeId === userProfile?.employeeId)}
               branches={allowedBranches}
               onLogout={handleLogout}
+              onUpdateCredentials={handleEmployeeUpdateCredentials}
+              onLinkGoogle={handleEmployeeLinkGoogle}
           />
       );
   }

@@ -6,10 +6,16 @@ import {
   FileText, 
   Download, 
   Printer, 
-  Calendar,
-  Briefcase,
-  Building2,
-  Phone
+  Calendar, 
+  Briefcase, 
+  Building2, 
+  Phone,
+  Settings,
+  X,
+  Lock,
+  Save,
+  CheckCircle,
+  AlertCircle
 } from 'lucide-react';
 import { Employee, PayrollRecord, Branch } from '../types';
 import { COMPANY_NAME, COMPANY_LOGO, LOGO_DARK_BG } from '../constants';
@@ -19,20 +25,65 @@ interface EmployeePortalProps {
   payrollRecords: PayrollRecord[];
   branches: Branch[];
   onLogout: () => void;
+  onUpdateCredentials: (newId: string, newPass: string) => Promise<void>;
+  onLinkGoogle: () => Promise<void>;
 }
 
-const EmployeePortal: React.FC<EmployeePortalProps> = ({ employee, payrollRecords, branches, onLogout }) => {
+const EmployeePortal: React.FC<EmployeePortalProps> = ({ 
+  employee, 
+  payrollRecords, 
+  branches, 
+  onLogout,
+  onUpdateCredentials,
+  onLinkGoogle
+}) => {
   const [viewingPayslip, setViewingPayslip] = useState<PayrollRecord | null>(null);
   const [isPrinting, setIsPrinting] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+
+  // Settings State
+  const [newLoginId, setNewLoginId] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [isUpdating, setIsUpdating] = useState(false);
 
   const handlePrintPayslip = (record: PayrollRecord) => {
     setViewingPayslip(record);
+    const originalTitle = document.title;
+    document.title = `Payslip_${record.employeeId}`; // Dynamic Filename
     setIsPrinting(true);
     setTimeout(() => {
       window.print();
       setIsPrinting(false);
       setViewingPayslip(null);
+      document.title = originalTitle; // Restore original title
     }, 500);
+  };
+
+  const handleCredentialUpdate = async () => {
+      if (!newLoginId || !newPassword) return alert("Please fill in both fields.");
+      setIsUpdating(true);
+      try {
+          await onUpdateCredentials(newLoginId, newPassword);
+          setNewLoginId('');
+          setNewPassword('');
+          setShowSettings(false);
+      } catch (e) {
+          console.error(e);
+      } finally {
+          setIsUpdating(false);
+      }
+  };
+
+  const handleGoogleLink = async () => {
+      setIsUpdating(true);
+      try {
+          await onLinkGoogle();
+          setShowSettings(false);
+      } catch (e) {
+          console.error(e);
+      } finally {
+          setIsUpdating(false);
+      }
   };
 
   // Reusing the Payslip Document Component Logic locally to be self-contained
@@ -92,6 +143,7 @@ const EmployeePortal: React.FC<EmployeePortalProps> = ({ employee, payrollRecord
                         <div className="flex justify-between"><span>Conveyance</span><span className="font-medium">{record.earnings.conveyance.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
                         <div className="flex justify-between"><span>Special Allowance</span><span className="font-medium">{record.earnings.specialAllowance.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>
                         {record.earnings.incentive > 0 && <div className="flex justify-between"><span>Incentive / Bonus</span><span className="font-medium">{record.earnings.incentive.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>}
+                        {(record.earnings.leaveEncashment || 0) > 0 && <div className="flex justify-between"><span>Leave Encashment</span><span className="font-medium">{record.earnings.leaveEncashment.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span></div>}
                     </div>
                     <div className="border-t border-black p-2 font-bold flex justify-between bg-gray-50 mt-auto">
                         <span>Total Earnings Rs.</span>
@@ -174,9 +226,14 @@ const EmployeePortal: React.FC<EmployeePortalProps> = ({ employee, payrollRecord
                   <p className="text-[10px] text-blue-300 font-mono mt-0.5">{employee.id}</p>
                </div>
             </div>
-            <button onClick={onLogout} className="flex items-center text-xs font-bold bg-white/10 px-4 py-2 rounded-lg hover:bg-white/20 transition-all">
-               <LogOut size={14} className="mr-2" /> <span className="hidden md:inline">Sign Out</span>
-            </button>
+            <div className="flex items-center space-x-3">
+                <button onClick={() => setShowSettings(true)} className="flex items-center text-xs font-bold bg-white/10 px-3 py-2 rounded-lg hover:bg-white/20 transition-all">
+                    <Settings size={14} className="md:mr-2" /> <span className="hidden md:inline">Security</span>
+                </button>
+                <button onClick={onLogout} className="flex items-center text-xs font-bold bg-white/10 px-4 py-2 rounded-lg hover:bg-white/20 transition-all">
+                    <LogOut size={14} className="mr-2" /> <span className="hidden md:inline">Sign Out</span>
+                </button>
+            </div>
          </div>
       </header>
 
@@ -267,6 +324,76 @@ const EmployeePortal: React.FC<EmployeePortalProps> = ({ employee, payrollRecord
             </div>
          </div>
       </main>
+
+      {/* Security Settings Modal */}
+      {showSettings && (
+          <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in zoom-in-95 duration-200">
+              <div className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl border border-gray-200">
+                  <div className="flex justify-between items-center mb-6">
+                      <h3 className="text-xl font-black text-gray-800">Security Settings</h3>
+                      <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-gray-100 rounded-full transition-all">
+                          <X size={20} className="text-gray-400" />
+                      </button>
+                  </div>
+
+                  <div className="space-y-8">
+                      {/* Change Credentials */}
+                      <div className="space-y-4">
+                          <h4 className="text-xs font-black text-[#0854a0] uppercase tracking-widest border-b border-gray-100 pb-2 flex items-center">
+                              <Lock size={12} className="mr-1.5" /> Update Credentials
+                          </h4>
+                          <div>
+                              <label className="text-[10px] font-bold text-gray-500 uppercase ml-1">New Login ID / Email</label>
+                              <input 
+                                  type="text" 
+                                  className="w-full border-2 border-gray-100 rounded-xl px-4 py-3 text-sm font-bold text-gray-800 focus:border-[#0854a0] outline-none mt-1 transition-all"
+                                  placeholder="Enter new Login ID"
+                                  value={newLoginId}
+                                  onChange={(e) => setNewLoginId(e.target.value)}
+                              />
+                          </div>
+                          <div>
+                              <label className="text-[10px] font-bold text-gray-500 uppercase ml-1">New Password</label>
+                              <input 
+                                  type="password" 
+                                  className="w-full border-2 border-gray-100 rounded-xl px-4 py-3 text-sm font-bold text-gray-800 focus:border-[#0854a0] outline-none mt-1 transition-all"
+                                  placeholder="Enter new Password"
+                                  value={newPassword}
+                                  onChange={(e) => setNewPassword(e.target.value)}
+                              />
+                          </div>
+                          <button 
+                              onClick={handleCredentialUpdate}
+                              disabled={isUpdating}
+                              className="w-full bg-[#0854a0] text-white py-3 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-[#064280] transition-all flex items-center justify-center shadow-lg disabled:opacity-50"
+                          >
+                              {isUpdating ? 'Updating...' : <><Save size={14} className="mr-2" /> Save Changes</>}
+                          </button>
+                      </div>
+
+                      {/* Google Link */}
+                      <div className="space-y-4 pt-2">
+                          <h4 className="text-xs font-black text-rose-500 uppercase tracking-widest border-b border-gray-100 pb-2 flex items-center">
+                              <User size={12} className="mr-1.5" /> Social Login
+                          </h4>
+                          <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                              <p className="text-[11px] font-medium text-gray-600 mb-4 leading-relaxed">
+                                  Link your Google Account to login instantly without a password. This will update your registered email to your Google email.
+                              </p>
+                              <button 
+                                  onClick={handleGoogleLink}
+                                  disabled={isUpdating}
+                                  className="w-full bg-white border-2 border-gray-200 text-gray-700 py-3 rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-gray-50 hover:border-gray-300 transition-all flex items-center justify-center shadow-sm"
+                              >
+                                  <img src="https://www.svgrepo.com/show/475656/google-color.svg" className="w-4 h-4 mr-2" alt="Google" />
+                                  Link Google Account
+                              </button>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+          </div>
+      )}
     </div>
   );
 };
