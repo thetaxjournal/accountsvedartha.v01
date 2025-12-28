@@ -1,0 +1,7 @@
+{
+  "name": "Copy of systemsolution",
+  "description": "A comprehensive professional invoicing and accounting ERP with multi-branch support, client management, and detailed analytics.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
