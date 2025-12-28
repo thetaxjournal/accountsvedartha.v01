@@ -58,17 +58,82 @@ const App: React.FC = () => {
 
   // Auth Listener (Only for Firebase Auth users, Custom users handled in handleLogin)
   useEffect(() => {
-    // 1. Check LocalStorage for persisted custom session
-    const storedUser = localStorage.getItem('vedartha_user');
-    if (storedUser) {
-      try {
-        const parsedUser = JSON.parse(storedUser);
-        handleLogin(parsedUser);
-      } catch (e) {
-        console.error("Failed to restore session", e);
-        localStorage.removeItem('vedartha_user');
-      }
-    }
+    const restoreSession = async () => {
+        // 1. Check LocalStorage for persisted custom session
+        const storedUser = localStorage.getItem('vedartha_user');
+        if (storedUser) {
+          try {
+            const parsedUser = JSON.parse(storedUser);
+            
+            // --- SESSION REFRESH LOGIC ---
+            // Instead of blindly using stored data, fetch fresh data from DB using UID
+            // This ensures if Employee ID was migrated (834 -> 91), the session gets the new ID
+            
+            let freshUser = null;
+
+            if (parsedUser.isStaff) {
+                // Fetch from 'users' collection
+                const userDoc = await getDoc(doc(db, 'users', parsedUser.uid));
+                if (userDoc.exists()) {
+                    const userData = userDoc.data();
+                    freshUser = {
+                        uid: userDoc.id,
+                        email: userData.email,
+                        displayName: userData.displayName,
+                        role: userData.role,
+                        allowedBranchIds: userData.allowedBranchIds || [],
+                        isStaff: true,
+                        employeeId: userData.employeeId // This will now be the NEW ID
+                    };
+                }
+            } else if (parsedUser.isClient) {
+                // Fetch from 'clients'
+                const clientDoc = await getDoc(doc(db, 'clients', parsedUser.uid));
+                if (clientDoc.exists() && clientDoc.data().portalAccess) {
+                    const clientData = clientDoc.data();
+                    freshUser = {
+                        uid: clientData.id,
+                        email: clientData.email,
+                        displayName: clientData.name,
+                        role: UserRole.CLIENT,
+                        clientId: clientData.id,
+                        isClient: true
+                    };
+                }
+            } else if (parsedUser.isBranchUser) {
+                // Fetch from 'branches'
+                const branchDoc = await getDoc(doc(db, 'branches', parsedUser.uid));
+                if (branchDoc.exists()) {
+                    const branchData = branchDoc.data();
+                    freshUser = {
+                        uid: branchData.id,
+                        email: branchData.email,
+                        displayName: `${branchData.name} (Manager)`,
+                        role: UserRole.BRANCH_MANAGER,
+                        allowedBranchIds: [branchData.id],
+                        isBranchUser: true
+                    };
+                }
+            }
+
+            if (freshUser) {
+                // Update local storage with fresh data
+                localStorage.setItem('vedartha_user', JSON.stringify(freshUser));
+                handleLogin(freshUser);
+            } else {
+                // Session invalid (deleted user or revoked access)
+                console.warn("Session expired or invalid, clearing.");
+                localStorage.removeItem('vedartha_user');
+            }
+
+          } catch (e) {
+            console.error("Failed to restore session", e);
+            localStorage.removeItem('vedartha_user');
+          }
+        }
+    };
+
+    restoreSession();
 
     // 2. Standard Firebase Auth
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
